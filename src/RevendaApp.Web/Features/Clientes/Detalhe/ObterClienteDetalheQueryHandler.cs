@@ -61,7 +61,7 @@ public sealed class ObterClienteDetalheQueryHandler(AppDbContext db, ITenantCont
 
         // Recompra atual por produto com aviso: intervalo aprendido (dias) e data prevista da
         // próxima compra, calculados em dias de calendário de Brasília (mesma regra do dashboard).
-        var agora = timeProvider?.GetUtcNow().UtcDateTime ?? DateTime.UtcNow;
+        var agora = (timeProvider ?? TimeProvider.System).GetUtcNow().UtcDateTime;
         var hojeBrasilia = BrasilTimeZone.ParaBrasilia(agora).Date;
         var recompras = await db.RecorrenciasCompra
             .Where(r => r.ClienteId == query.ClienteId

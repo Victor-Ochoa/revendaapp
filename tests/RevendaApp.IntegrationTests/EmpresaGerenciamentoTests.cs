@@ -676,7 +676,7 @@ public class EmpresaGerenciamentoTests(DatabaseFixture fixture) : IClassFixture<
     /// <summary>
     /// Cria uma empresa ativa com um admin ativo (identificador único por chamada) e devolve o Id.
     /// </summary>
-    private async Task<Guid> CriarEmpresaComAdminAsync(ServicosCentral servicos, string nome, string identificador)
+    private static async Task<Guid> CriarEmpresaComAdminAsync(ServicosCentral servicos, string nome, string identificador)
     {
         // O Postgres do AppHost tem volume persistente: sufixo aleatório no slug (índice único)
         // para nunca colidir com uma execução anterior.

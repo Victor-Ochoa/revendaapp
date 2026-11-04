@@ -44,11 +44,18 @@ public sealed class RegistrarPagamentoCommandHandler(AppDbContext db, ITenantCon
                 break;
             }
 
-            if (valorPago >= venda.ValorTotal)
+            // FIFO estrito: a venda mais antiga em aberto precisa ser coberta inteira antes de
+            // qualquer venda posterior ser marcada como quitada. Sem este `break`, um pagamento
+            // parcial que não fecha a dívida antiga "pulava" para a próxima venda e a marcava
+            // FiadoQuitado — reconhecendo lucro de uma venda ainda não paga no dashboard, além de
+            // deixar a venda mais antiga em aberto com a mais nova quitada.
+            if (valorPago < venda.ValorTotal)
             {
-                venda.MarcarFiadoQuitado();
-                valorPago -= venda.ValorTotal;
+                break;
             }
+
+            venda.MarcarFiadoQuitado();
+            valorPago -= venda.ValorTotal;
         }
 
         await db.SaveChangesAsync(cancellationToken);
