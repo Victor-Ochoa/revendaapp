@@ -5,6 +5,7 @@ using FluentValidation;
 using Mediator;
 
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Localization;
 using Microsoft.EntityFrameworkCore;
@@ -101,6 +102,14 @@ builder.Services.ConfigureApplicationCookie(cookie =>
     // Redirect a usuário autenticado, porém sem a role exigida, para a página personalizada
     // de "Sem Autorização" (em vez do comportamento padrão de 403/redirect ao login).
     cookie.AccessDeniedPath = "/sem-autorizacao";
+
+    // Em produção o TLS termina no Caddy e o app só vê HTTP. Como passamos a aceitar
+    // X-Forwarded-Proto do proxy, o cookie precisa ser SEMPRE Secure fora de Development —
+    // senão um X-Forwarded-Proto forjado conseguiria rebaixar o cookie de sessão para texto puro.
+    // Em Development mantemos SameAsRequest para o http://localhost continuar funcionando.
+    cookie.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
+        ? CookieSecurePolicy.SameAsRequest
+        : CookieSecurePolicy.Always;
 
     // Teto ABSOLUTO da sessão de impersonation ("Entrar como"): 8h contadas do início, validadas a
     // cada request pelo claim ImpersonacaoIniciadaEm. Sem isto o cookie sliding + o
@@ -238,6 +247,14 @@ using (var scope = app.Services.CreateScope())
 }
 
 // Configure the HTTP request pipeline.
+// Em produção o Caddy (host) termina o TLS e faz reverse_proxy para a porta publicada do
+// container — o Kestrel enxerga o gateway do Docker, não loopback. Precisa vir ANTES do
+// UseHttpsRedirection: o redirect só acerta o destino se o esquema já estiver corrigido, e é o
+// esquema https que faz o cookie de autenticação sair como Secure.
+var opcoesProxy = new ForwardedHeadersOptions();
+ForwardedHeadersConfig.Configurar(opcoesProxy, app.Configuration[ForwardedHeadersConfig.ChaveRedesConfiaveis]);
+app.UseForwardedHeaders(opcoesProxy);
+
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
