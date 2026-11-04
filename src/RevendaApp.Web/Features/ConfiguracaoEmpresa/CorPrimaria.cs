@@ -1,5 +1,7 @@
 using MudBlazor.Utilities;
 
+using RevendaApp.Web.Theme;
+
 namespace RevendaApp.Web.Features.ConfiguracaoEmpresa;
 
 /// <summary>
@@ -20,8 +22,11 @@ namespace RevendaApp.Web.Features.ConfiguracaoEmpresa;
 /// </remarks>
 internal static class CorPrimaria
 {
-    /// <summary>Cor assumida quando a empresa ainda não escolheu uma (azul marinho do tema).</summary>
-    internal const string Padrao = "#0A1F44";
+    /// <summary>
+    /// Cor assumida quando a empresa ainda não escolheu uma (azul marinho). Delega ao tema para
+    /// não haver duas fontes de verdade do padrão.
+    /// </summary>
+    internal const string Padrao = RevendaAppTheme.CorPrimariaPadrao;
 
     /// <summary>
     /// Formata um <see cref="MudColor"/> no hex de 6 dígitos que o validador aceita.

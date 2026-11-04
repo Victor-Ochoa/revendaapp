@@ -112,6 +112,45 @@ public class ConfigEmpresaCorTests
     }
 
     /// <summary>
+    /// Limpar a cor no picker (<c>ClearAsync</c>, alcançável pela UI pelo switch de modo) entrega
+    /// <b>null</b> ao <c>ValueChanged</c> — o argumento genérico declarado é <c>MudColor</c>, não
+    /// <c>MudColor?</c>, então o compilador não avisa. Um handler que dereferencia o valor nulo
+    /// derruba o circuito Blazor e o admin perde o formulário inteiro.
+    /// </summary>
+    /// <remarks>
+    /// O teste falha antes do guard (a exceção sobe pelo callback) e passa depois: o componente
+    /// continua renderizado e o Salvar seguinte ainda envia um hex válido — a limpeza do picker
+    /// não contamina o valor do domínio.
+    /// </remarks>
+    [Fact]
+    public async Task Limpar_a_cor_no_picker_nao_derruba_o_circuito()
+    {
+        await using var ctx = new BunitContext();
+        ctx.JSInterop.Mode = JSRuntimeMode.Loose;
+        ctx.Services.AddMudServices();
+        ctx.Services.AddSingleton<AntiforgeryStateProvider, AntiforgerySemToken>();
+        var sender = new SenderQueCapturaConfigEmpresa();
+        ctx.Services.AddSingleton<ISender>(sender);
+
+        var cut = ctx.Render<ConfigEmpresaTab>();
+
+        cut.WaitForAssertion(() => Assert.Contains("Salvar", cut.Markup, StringComparison.Ordinal));
+
+        var picker = cut.FindComponent<MudColorPicker>();
+
+        // Não deve lançar: o guard transforma o null do picker em no-op.
+        await cut.InvokeAsync(() => picker.Instance.ClearAsync());
+
+        // O componente sobreviveu à limpeza (o circuito não foi derrubado) e o formulário continua
+        // utilizável. Salvar prova que o valor do domínio não foi zerado junto com a exibição.
+        Assert.Contains("Salvar", cut.Markup, StringComparison.Ordinal);
+        cut.Find("button.mud-button-filled").Click();
+
+        cut.WaitForAssertion(() => Assert.NotNull(sender.ComandoCapturado));
+        Assert.Matches("^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$", sender.ComandoCapturado!.CorPrimaria!);
+    }
+
+    /// <summary>
     /// <see cref="AntiforgeryToken"/> injeta <see cref="AntiforgeryStateProvider"/>; sem provedor o
     /// componente lançaria ao renderizar. Devolver <c>null</c> é o caso "sem token", que o
     /// componente trata renderizando nada — o form nativo não é o objeto deste teste.

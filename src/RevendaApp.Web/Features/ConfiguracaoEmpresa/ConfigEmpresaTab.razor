@@ -75,7 +75,7 @@ else
            (`Empresa.CorPrimaria` é #RGB/#RRGGBB). *@
         <MudColorPicker Label="Cor primária" Value="_corSelecionada"
                         ValueChanged="AoMudarCor" Variant="Variant.Outlined"
-                        ShowAlpha="false" Class="flex-grow-1" />
+                        ShowAlpha="false" />
     </div>
 
     <div class="d-flex align-center gap-2 mb-2">
@@ -143,8 +143,13 @@ else
             _bairro = _detalhe.Bairro;
             _cidade = _detalhe.Cidade;
             _estado = _detalhe.Estado;
-            _corPrimaria = _detalhe.CorPrimaria;
-            _corSelecionada = CorPrimaria.ParaPicker(_corPrimaria);
+            var corCarregada = CorPrimaria.ParaPicker(_detalhe.CorPrimaria);
+            _corSelecionada = corCarregada;
+
+            // Normaliza `_corPrimaria` a partir da cor efetivamente exibida: se o banco tinha um
+            // valor inválido, o picker mostra a padrão, e Salvar tem de enviar essa mesma cor —
+            // senão o admin vê #0A1F44 na tela e recebe um erro de formato ao salvar.
+            _corPrimaria = CorPrimaria.ParaHex(corCarregada);
             _logo = _detalhe.Logo;
             _telefones = _detalhe.Telefones.ToList();
         }
@@ -177,8 +182,19 @@ else
     /// Mantém <c>_corPrimaria</c> sincronizado com o picker no hex que o validador aceita
     /// (6 dígitos, sem alfa). É esse valor que <see cref="SalvarAsync"/> envia no comando.
     /// </summary>
-    private void AoMudarCor(MudColor cor)
+    /// <remarks>
+    /// O parâmetro é <c>MudColor?</c> de propósito: o <c>MudColorPicker</c> entrega <b>null</b> ao
+    /// <c>ValueChanged</c> quando o usuário limpa o campo hex (o argumento declarado é
+    /// <c>MudColor</c>, então o compilador não avisa). Sem o guard, o null dereferenciado derruba o
+    /// circuito e o admin perde o formulário inteiro.
+    /// </remarks>
+    private void AoMudarCor(MudColor? cor)
     {
+        if (cor is null)
+        {
+            return; // o picker emite null quando o usuário limpa o campo hex
+        }
+
         _corSelecionada = cor;
         _corPrimaria = CorPrimaria.ParaHex(cor);
     }

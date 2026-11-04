@@ -362,6 +362,9 @@ Este projeto é desenvolvido com TDD. Para qualquer novo caso de uso/handler:
 - Nomes de domínio, telas e mensagens ao usuário em **português** (é o idioma do negócio); nomes
   de tipos/namespaces em C# seguem PascalCase normal do .NET.
 - Nullable reference types habilitado; evite `null!` — prefira modelagem explícita.
+- Helper que precisa ficar `internal` mas é provado por teste unitário é exposto a
+  `RevendaApp.UnitTests` via `<InternalsVisibleTo>` em `RevendaApp.Web.csproj` — não torne o helper
+  `public` só para testá-lo.
 - Cada slice deve ter testes antes da implementação (ver seção TDD acima).
 - Após cada fase de desenvolvimento concluída e validada, gerar um commit com mensagem no padrão
   [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `chore:`, `test:`).
