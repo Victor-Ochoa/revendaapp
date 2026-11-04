@@ -172,6 +172,97 @@ public class ConfigEmpresaCorTests
     }
 
     /// <summary>
+    /// Quando o banco tem uma cor inválida (ou nenhuma), o picker exibe a cor padrão — e é a cor
+    /// padrão que Salvar tem de enviar. Mandar o valor inválido faria o admin ver `#0A1F44` na tela
+    /// e receber um erro de formato ao salvar.
+    /// </summary>
+    /// <remarks>
+    /// Prova <b>comportamental</b> do fallback: remover o ramo
+    /// <c>EhHexValido ? ... : ParaHex(corCarregada)</c> de <c>CarregarAsync</c> (passando a enviar
+    /// sempre `_detalhe.CorPrimaria`) mantém todos os outros testes verdes, porque eles usam uma cor
+    /// gravada válida. Este caso é o único que exercita o ramo.
+    /// </remarks>
+    [Theory]
+    [InlineData("nao-e-cor")]
+    [InlineData(null)]
+    public async Task Cor_invalida_ou_ausente_no_banco_vira_a_padrao_no_comando(string? corGravada)
+    {
+        await using var ctx = new BunitContext();
+        ctx.JSInterop.Mode = JSRuntimeMode.Loose;
+        ctx.Services.AddMudServices();
+        ctx.Services.AddSingleton<AntiforgeryStateProvider, AntiforgerySemToken>();
+        var sender = new SenderQueCapturaConfigEmpresa(corGravada!);
+        ctx.Services.AddSingleton<ISender>(sender);
+
+        var cut = ctx.Render<ConfigEmpresaTab>();
+
+        cut.WaitForAssertion(() => Assert.Contains("Salvar", cut.Markup, StringComparison.Ordinal));
+
+        // Salvar sem tocar no picker: o valor enviado vem do carregamento.
+        cut.Find("button.mud-button-filled").Click();
+
+        cut.WaitForAssertion(() => Assert.NotNull(sender.ComandoCapturado));
+
+        var corEnviada = sender.ComandoCapturado!.CorPrimaria;
+
+        // É a cor padrão (casing indiferente: `ParaHex` devolve minúsculas) e não o valor inválido
+        // que estava no banco.
+        Assert.Equal(CorPrimaria.Padrao, corEnviada, StringComparer.OrdinalIgnoreCase);
+        Assert.NotEqual(corGravada, corEnviada);
+    }
+
+    /// <summary>
+    /// Contrato entre <see cref="CorPrimaria.EhHexValido"/> e a regex do validador real para todo
+    /// valor <b>preenchido</b>: os dois têm de classificar igual.
+    /// </summary>
+    /// <remarks>
+    /// A regex está <b>duplicada de propósito</b>: a do validador é privada e esta task não pode
+    /// editá-la. Este teste é o contrato que mantém as duas iguais — se uma mudar e a outra não, ele
+    /// falha e aponta a causa (que seria o retorno do ruído de auditoria, num sentido ou no outro).
+    /// </remarks>
+    [Theory]
+    [InlineData("#abc")]
+    [InlineData("#ABC")]
+    [InlineData("#0A1F44")]
+    [InlineData("#0a1f44")]
+    [InlineData("#12345")]      // 5 dígitos — inválido
+    [InlineData("#GGGGGG")]     // não-hex
+    [InlineData("#0A1F44FF")]   // com alfa — inválido para o validador
+    [InlineData("nao-e-cor")]
+    public void EhHexValido_concorda_com_o_validador_real(string entrada)
+    {
+        var aceitoPeloValidador = new EditarConfigEmpresaCommandValidator()
+            .Validate(new EditarConfigEmpresaCommand("Empresa Teste", CorPrimaria: entrada)).IsValid;
+
+        Assert.Equal(aceitoPeloValidador, CorPrimaria.EhHexValido(entrada));
+    }
+
+    /// <summary>
+    /// Vazio/nulo é a <b>única</b> divergência deliberada entre os dois: o validador trata a cor
+    /// como campo opcional (o `.When(!IsNullOrWhiteSpace)` dispensa a regra) e aceita o vazio;
+    /// <see cref="CorPrimaria.EhHexValido"/> responde à pergunta mais estreita "isto é um hex?" e
+    /// devolve <c>false</c>.
+    /// </summary>
+    /// <remarks>
+    /// A divergência é necessária: se <c>EhHexValido(null)</c> fosse <c>true</c>, a aba manteria o
+    /// vazio no comando enquanto o picker exibe a cor padrão — o admin veria uma cor que não é a
+    /// gravada. Por isso o componente substitui o vazio pela padrão, e este teste trava esse
+    /// contrato em vez de deixá-lo implícito.
+    /// </remarks>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Cor_vazia_e_aceita_pelo_validador_mas_nao_e_hex(string? entrada)
+    {
+        var aceitoPeloValidador = new EditarConfigEmpresaCommandValidator()
+            .Validate(new EditarConfigEmpresaCommand("Empresa Teste", CorPrimaria: entrada)).IsValid;
+
+        Assert.True(aceitoPeloValidador);
+        Assert.False(CorPrimaria.EhHexValido(entrada));
+    }
+
+    /// <summary>
     /// Limpar a cor no picker (<c>ClearAsync</c>, alcançável pela UI pelo switch de modo) entrega
     /// <b>null</b> ao <c>ValueChanged</c>. Um handler que dereferencia o valor nulo derruba o
     /// circuito Blazor e o admin perde o formulário inteiro.
@@ -220,10 +311,14 @@ public class ConfigEmpresaCorTests
     }
 
     /// <summary>
-    /// <see cref="ISender"/> de teste: responde o detalhe da empresa com uma cor válida e captura o
-    /// comando de edição para que o teste asserte sobre o que a tela <b>realmente enviou</b>.
+    /// <see cref="ISender"/> de teste: responde o detalhe da empresa e captura o comando de edição
+    /// para que o teste asserte sobre o que a tela <b>realmente enviou</b>.
     /// </summary>
-    private sealed class SenderQueCapturaConfigEmpresa : ISender
+    /// <param name="corGravada">
+    /// Cor que a "empresa" tem no banco. O default é o valor típico; os testes de fallback passam um
+    /// valor inválido ou nulo.
+    /// </param>
+    private sealed class SenderQueCapturaConfigEmpresa(string corGravada = "#0A1F44") : ISender
     {
         public EditarConfigEmpresaCommand? ComandoCapturado { get; private set; }
 
@@ -257,7 +352,7 @@ public class ConfigEmpresaCorTests
                     null,
                     null,
                     [],
-                    "#0A1F44",
+                    corGravada,
                     null));
             }
 
