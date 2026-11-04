@@ -450,6 +450,12 @@ else
         {
             _pagamentoError = string.Join(" ", ex.Errors.Select(e => e.ErrorMessage));
         }
+        catch (InvalidOperationException ex)
+        {
+            // Conflito de concorrência (saldo alterado por outro pagamento): mostra a orientação de
+            // recarregar e tentar novamente em vez de derrubar o circuito.
+            _pagamentoError = ex.Message;
+        }
         finally
         {
             _salvandoPagamento = false;
