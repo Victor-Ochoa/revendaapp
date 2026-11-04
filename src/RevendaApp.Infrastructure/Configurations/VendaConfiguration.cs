@@ -15,7 +15,10 @@ public class VendaConfiguration : IEntityTypeConfiguration<Venda>
         builder.Property(v => v.Id).ValueGeneratedNever();
 
         builder.Property(v => v.EmpresaId).IsRequired();
-        builder.HasIndex(v => v.EmpresaId);
+
+        // Índice de tenant + dashboard: filtra por empresa e período, ordenando por DataHora.
+        // Substitui o índice simples de EmpresaId — o composto cobre o prefixo.
+        builder.HasIndex(v => new { v.EmpresaId, v.DataHora });
 
         builder.Property(v => v.FormaPagamento).HasConversion<string>().HasMaxLength(30);
         builder.Property(v => v.Desconto).HasPrecision(18, 2);

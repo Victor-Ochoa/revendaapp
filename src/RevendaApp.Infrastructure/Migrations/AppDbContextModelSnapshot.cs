@@ -179,7 +179,7 @@ namespace RevendaApp.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("EmpresaId");
+                    b.HasIndex("EmpresaId", "SaldoDevedor");
 
                     b.HasIndex("EmpresaId", "Telefone")
                         .IsUnique();
@@ -465,9 +465,9 @@ namespace RevendaApp.Infrastructure.Migrations
 
                     b.HasIndex("ClienteId");
 
-                    b.HasIndex("EmpresaId");
-
                     b.HasIndex("VendaId");
+
+                    b.HasIndex("EmpresaId", "Data");
 
                     b.ToTable("Pagamentos", (string)null);
                 });
@@ -691,7 +691,7 @@ namespace RevendaApp.Infrastructure.Migrations
 
                     b.HasIndex("ClienteId");
 
-                    b.HasIndex("EmpresaId");
+                    b.HasIndex("EmpresaId", "DataHora");
 
                     b.ToTable("Vendas", (string)null);
                 });
