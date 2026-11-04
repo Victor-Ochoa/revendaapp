@@ -83,10 +83,17 @@ public static class ForwardedHeadersConfig
     private static System.Net.IPNetwork ParseCidr(string cidr)
     {
         var partes = cidr.Split('/', StringSplitOptions.TrimEntries);
+
+        // `IPAddress.TryParse` é leniente: "10" vira 0.0.0.10 e "010.0.0.0" é lido como octal
+        // (8.0.0.0, faixa PÚBLICA). Comparar a forma canônica com o texto informado rejeita os dois
+        // casos — sem isso, um erro de digitação ampliaria a confiança em silêncio, que é
+        // exatamente o que esta classe promete não fazer.
         if (partes.Length != 2
             || !IPAddress.TryParse(partes[0], out var endereco)
+            || endereco.ToString() != partes[0]
             || !int.TryParse(partes[1], out var prefixo)
-            || prefixo < 0
+            // Prefixo 0 = confiança universal (aceitaria X-Forwarded-* de qualquer origem).
+            || prefixo < 1
             || prefixo > (endereco.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 ? 128 : 32))
         {
             // Falha explícita: um CIDR inválido em produção não pode ser ignorado em silêncio.

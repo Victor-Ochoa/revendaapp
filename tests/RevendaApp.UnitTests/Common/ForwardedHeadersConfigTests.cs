@@ -78,6 +78,21 @@ public class ForwardedHeadersConfigTests
         Assert.False(EhConfiavel(opcoes, IPAddress.Parse("192.168.1.5")));
     }
 
+    [Theory]
+    [InlineData("010.0.0.0/8")] // octal → 8.0.0.0/8, faixa PÚBLICA
+    [InlineData("10/8")]        // abreviado → 0.0.0.10/8, amplia a confiança
+    [InlineData("0.0.0.0/0")]   // confiança universal
+    public void Configurar_recusa_cidr_malformado_em_vez_de_ampliar_a_confianca(string cidr)
+    {
+        var opcoes = new ForwardedHeadersOptions();
+
+        // IPAddress.TryParse é leniente: "10" vira 0.0.0.10 e "010.0.0.0" é lido como octal
+        // (8.0.0.0, faixa PÚBLICA). Aceitar isso transformaria um erro de digitação em confiança
+        // silenciosamente maior — o contrato da classe é falhar alto.
+        Assert.Throws<InvalidOperationException>(
+            () => ForwardedHeadersConfig.Configurar(opcoes, cidr));
+    }
+
     private static bool EhConfiavel(ForwardedHeadersOptions opcoes, IPAddress ip) =>
         opcoes.KnownProxies.Contains(ip)
         || opcoes.KnownIPNetworks.Any(rede => rede.Contains(ip));
