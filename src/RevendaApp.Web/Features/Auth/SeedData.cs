@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Logging;
 
 using RevendaApp.Infrastructure.Identity;
 
@@ -16,7 +17,7 @@ namespace RevendaApp.Web.Features.Auth;
 /// depois, pela central — o bootstrap nunca cria empresa nem admin de empresa.
 /// </para>
 /// </remarks>
-public static class SeedData
+public static partial class SeedData
 {
     public const string DefaultEmail = "admin@revenda.app.com.br";
     public const string DefaultPassword = "RevendaApp@123";
@@ -24,8 +25,17 @@ public static class SeedData
     /// <summary>Nome de exibição do super admin criado no bootstrap.</summary>
     public const string NomeSuperAdmin = "Super Administrador";
 
+    /// <param name="services">Provider com o escopo do bootstrap (UserManager/RoleManager).</param>
+    /// <param name="configuration">Configuração com "SeedAdmin:Email"/"SeedAdmin:Password".</param>
+    /// <param name="requireExplicitCredentials">
+    /// Em Produção, exige as credenciais configuradas em vez de cair no default de desenvolvimento.
+    /// </param>
+    /// <param name="logger">
+    /// Logger opcional do bootstrap. Opcional porque os testes chamam o seed direto, sem host; sem
+    /// ele o seed continua funcionando, apenas sem trilha de log.
+    /// </param>
     public static async Task SeedDefaultAdminUserAsync(IServiceProvider services, IConfiguration configuration,
-        bool requireExplicitCredentials = false)
+        bool requireExplicitCredentials = false, ILogger? logger = null)
     {
         var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
         var roleManager = services.GetRequiredService<RoleManager<ApplicationRole>>();
@@ -76,6 +86,12 @@ public static class SeedData
                 var errors = string.Join("; ", result.Errors.Select(e => e.Description));
                 throw new InvalidOperationException($"Falha ao criar o usuário super administrador padrão: {errors}");
             }
+
+            // Só o e-mail: a senha NUNCA vai para o log.
+            if (logger is not null)
+            {
+                LogSuperAdminCriado(logger, email);
+            }
         }
         else
         {
@@ -125,6 +141,10 @@ public static class SeedData
             }
         }
     }
+
+    /// <summary>Trilha do bootstrap: registra apenas o e-mail do super admin criado (nunca a senha).</summary>
+    [LoggerMessage(Level = LogLevel.Information, Message = "Super admin da central criado: {Email}")]
+    private static partial void LogSuperAdminCriado(ILogger logger, string email);
 
     /// <summary>Cria as roles <see cref="ApplicationRole.Admin"/>, <see cref="ApplicationRole.Vendedor"/>
     /// e <see cref="ApplicationRole.SuperAdmin"/> se ainda não existirem. Idempotente — chamado no

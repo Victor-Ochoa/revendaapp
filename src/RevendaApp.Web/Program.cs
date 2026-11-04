@@ -226,11 +226,20 @@ app.MapDefaultEndpoints();
 // desligado via "Seed:EnableDemoData": false (appsettings.Production.json).
 using (var scope = app.Services.CreateScope())
 {
+    // Sem trilha de log o bootstrap é uma caixa-preta: se a migração falhar ou o seed não rodar,
+    // o operador não tem como saber em que passo o processo parou.
+    var bootstrapLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    LogsDoBootstrap.AplicandoMigracoes(bootstrapLogger);
+
     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await dbContext.Database.MigrateAsync();
 
     var credentialsRequired = app.Environment.IsProduction();
-    await SeedData.SeedDefaultAdminUserAsync(scope.ServiceProvider, app.Configuration, requireExplicitCredentials: credentialsRequired);
+    await SeedData.SeedDefaultAdminUserAsync(
+        scope.ServiceProvider,
+        app.Configuration,
+        requireExplicitCredentials: credentialsRequired,
+        logger: bootstrapLogger);
 
     if (app.Configuration.GetValue("Seed:EnableDemoData", !app.Environment.IsProduction()))
     {
@@ -259,6 +268,8 @@ using (var scope = app.Services.CreateScope())
             scope.ServiceProvider.GetRequiredService<RoleManager<ApplicationRole>>(),
             scope.ServiceProvider.GetRequiredService<TimeProvider>());
     }
+
+    LogsDoBootstrap.Concluido(bootstrapLogger);
 }
 
 // Configure the HTTP request pipeline.
@@ -295,3 +306,15 @@ app.MapAuthEndpoints();
 app.MapConfiguracaoEmpresaEndpoints();
 
 app.Run();
+
+// Logs do bootstrap no padrão LoggerMessage (CA1848): a mensagem só é formatada quando o nível
+// está habilitado. Ficam num tipo próprio porque métodos [LoggerMessage] precisam ser `partial`,
+// o que não é possível em statements de topo.
+internal static partial class LogsDoBootstrap
+{
+    [LoggerMessage(Level = LogLevel.Information, Message = "Aplicando migrações do banco...")]
+    public static partial void AplicandoMigracoes(ILogger logger);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Bootstrap concluído: migrações aplicadas e super admin verificado.")]
+    public static partial void Concluido(ILogger logger);
+}
