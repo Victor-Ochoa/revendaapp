@@ -112,9 +112,11 @@ Leia esta seção inteira antes de mexer em qualquer handler, entidade ou consul
   **10** entidades de domínio (`Cliente`, `Produto`, `Venda`, `ItemVenda`, `Pagamento`,
   `MovimentacaoEstoque`, `HistoricoEstoque`, `PrecoPersonalizadoCliente`, `EmprestimoVasilhame`,
   `RecorrenciaCompra`) e o `SetEmpresaIdInterceptor` carimba `EmpresaId` nas linhas `Added` que
-  ainda estejam com `Guid.Empty`. **Não** são filtradas: `Empresas`, as tabelas do Identity e
-  `RegistrosAuditoria` (global, ver auditoria abaixo). A lista é **travada** por
-  `tests/RevendaApp.UnitTests/Tenancy/FiltrosGlobaisTests.cs` — entidade nova com/sem filtro obriga a
+  ainda estejam com `Guid.Empty`. **Não** são filtradas: `Empresas`, as tabelas do Identity,
+  `RegistrosAuditoria` (global, ver auditoria abaixo) e `DataProtectionKeys` (global por natureza:
+  as chaves de criptografia valem para o processo inteiro, não para um tenant). A lista é
+  **travada** por `tests/RevendaApp.UnitTests/Tenancy/FiltrosGlobaisTests.cs` — entidade nova
+  com/sem filtro obriga a
   atualizar o teste e a decisão consciente.
 - **Fail-closed.** `ITenantContext.EmpresaId` só devolve `null` (modo central = vê todas as
   empresas) em dois casos: (a) **não autenticado** (seed, SSR estático, design-time) ou (b)
@@ -194,7 +196,11 @@ Leia esta seção inteira antes de mexer em qualquer handler, entidade ou consul
   sob o tenant dessa empresa, dados de demonstração (clientes, produtos, vendas cobrindo todas as
   formas de pagamento, pagamentos e movimentações de estoque com datas anteriores a hoje) se ainda
   não houver produtos na empresa demo.
-- **Migrations EF**: ver seção acima (exige `dotnet-ef`).
+- **Migrations EF**: ver seção acima (exige `dotnet-ef`). O hardening de produção acrescentou as
+  migrações `DataProtectionKeys`, `IndicesDashboard` e `ConcorrenciaXmin`. A `ConcorrenciaXmin`
+  contém chamadas `AddColumn`/`DropColumn` no `Up`/`Down`, mas o SQL emitido é **vazio** — o Npgsql
+  filtra operações em colunas de sistema (`xmin` é uma coluna de sistema do Postgres). Não tente
+  "consertar" essa migração: as chamadas existem só para o snapshot do EF reconhecer o token.
 
 ## Funcionalidades além do fluxo básico
 
@@ -375,3 +381,34 @@ Este projeto é desenvolvido com TDD. Para qualquer novo caso de uso/handler:
   `RegistrosAuditoria` sem filtro por `EmpresaId` fora da central. Toda entidade de domínio nova
   precisa de `EmpresaId` + filtro global + entrada no interceptor + atualização de
   `FiltrosGlobaisTests`.
+- **Não** remova o `PersistKeysToDbContext<AppDbContext>()`: é o que mantém cookies de autenticação
+  e tokens antiforgery válidos depois de um restart do container e o que permite que mais de uma
+  réplica compartilhe as mesmas chaves. As chaves ficam na tabela global `DataProtectionKeys` (sem
+  `EmpresaId`, sem filtro de tenant). Sem ele as chaves vão para o filesystem efêmero do container,
+  cada restart gera chaves novas e **todo mundo é deslogado**; com duas réplicas, a sessão quebra ao
+  trocar de instância.
+- **Não** remova o `UseForwardedHeaders` nem o `ForwardedHeadersConfig`: é o que faz o cookie
+  `Secure` sair corretamente atrás do Caddy. A confiança é loopback + RFC1918 porque o Caddy no host
+  alcança uma **porta publicada do container**, então o Kestrel vê o gateway da bridge do Docker,
+  não o loopback. Ajustável por `Proxy:RedesConfiaveis`; um CIDR malformado **lança no startup** de
+  propósito — um typo não pode alargar a confiança silenciosamente. Fora de Development o
+  `SecurePolicy` do cookie é `Always`: com `SameAsRequest`, um `X-Forwarded-Proto` forjado
+  rebaixaria a sessão para texto puro.
+- **Não** remova o `builder.Property<uint>("xmin").IsRowVersion()` de `Produto`/`Cliente`: é a única
+  barreira contra duas vendas simultâneas do último item gravarem estoque negativo e contra dois
+  pagamentos concorrentes sobrescreverem o `SaldoDevedor`. `UseXminAsConcurrencyToken()` não existe
+  mais no Npgsql 10 — use `IsRowVersion()`.
+- **Armadilha nova (o token muda tudo):** como `Produto`/`Cliente` agora têm token de linha, qualquer
+  `ExecuteUpdate`/`ExecuteUpdateAsync` nessas tabelas grava por fora do change tracker e deixa a
+  entidade rastreada com `xmin` defasado — o próximo save no mesmo contexto falha com um conflito
+  **legítimo** (já quebrou um teste de integração). Use os métodos de domínio sobre a entidade
+  rastreada (`produto.AjustarVasilhames(n)` + `SaveChangesAsync`) em vez de update em massa.
+- **Não** remova o `ConcorrenciaBehavior` nem o `db.ChangeTracker.Clear()` dele: o `AppDbContext` é
+  scoped ao circuito Blazor, o EF **não** desfaz o estado das entidades num save que falhou, e os
+  diálogos mantêm o circuito vivo depois de exibir o erro. Sem a limpeza, a próxima operação do
+  mesmo circuito commitaria a venda/pagamento fantasma da tentativa que o operador acreditou ter
+  falhado.
+- **Ordem do pipeline do Mediator:** o **primeiro** `IPipelineBehavior` registrado é o **mais
+  externo** (o Mediator inverte a lista ao montar o encadeamento). `ConcorrenciaBehavior` vem antes
+  de `ValidationBehavior` de propósito: o conflito só nasce no save do handler e precisa envolver o
+  pipeline inteiro.

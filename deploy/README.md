@@ -77,6 +77,23 @@ Encrypt válido). Login com o email/senha de `Parameters:seed-admin-email/-passw
 | Caddy | Host (systemd) | `:443` TLS (Let's Encrypt via sslip.io) → `localhost:8080`; `:80` usado pelo ACME |
 | Registry | Magalu Container Registry | `container-registry.br-se1.magalu.cloud/revendaapp` |
 
+## Sessões e proxy (hardening)
+
+- **Chaves de Data Protection no Postgres.** As chaves ficam na tabela `DataProtectionKeys` do banco
+  (`PersistKeysToDbContext`), não no filesystem efêmero do container. Reiniciar o container **não**
+  desloga os usuários, e duas réplicas compartilham as mesmas chaves — a sessão sobrevive à troca de
+  instância. Não troque isso por persistência em arquivo: cada restart geraria chaves novas e
+  invalidaria todos os cookies de autenticação e tokens antiforgery já emitidos.
+- **`X-Forwarded-*` confiável só de loopback + RFC1918.** O Caddy no host faz `reverse_proxy` para a
+  porta publicada do container, então o Kestrel enxerga o gateway da bridge do Docker. Sem esse
+  processamento o esquema real (`https`) fica invisível e o cookie `Secure` nunca é emitido. A lista
+  de redes é ajustável em `Proxy:RedesConfiaveis` (CIDRs separados por vírgula); um CIDR malformado
+  **derruba o startup** de propósito.
+- **Recomendado: publique a porta do container só em loopback.** Use `127.0.0.1:8080:8080` no lugar
+  de `8080:8080`. Hoje a porta é alcançável pela NIC privada da VM: um par na mesma rede poderia
+  falar direto com o Kestrel e forjar `X-Forwarded-Proto` (e, com isso, o esquema/cookie). Publicando
+  em loopback só o Caddy do host chega ao app.
+
 ## Atualizar secret do admin depois de criado
 O seed do admin é idempotente (`FindByEmailAsync`). Se o `seed-admin-password` mudar após o
 primeiro boot, o admin **não** será recriado — altere a senha via SQL na VM ou esvazie o volume.
