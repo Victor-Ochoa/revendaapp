@@ -46,33 +46,52 @@ public class DataProtectionTests(DatabaseFixture fixture) : IClassFixture<Databa
     /// É a condição para o <c>PersistKeysToDbContext</c> funcionar — se a tabela não aceitasse a
     /// escrita ou perdesse as colunas, o restart continuaria invalidando os cookies.
     /// </summary>
+    /// <remarks>
+    /// A linha é removida ao final: <c>ResetDatabaseAsync</c> não esvazia esta tabela (ela não é
+    /// dado de domínio/Identity) e o app real a lê ao carregar o keyring — uma chave de teste
+    /// esquecida ali acumularia lixo entre execuções. O <c>id</c> do XML é um GUID de verdade para
+    /// que o keyring consiga desserializá-la sem <c>FormatException</c>.
+    /// </remarks>
     [Fact]
     public async Task Chave_de_DataProtection_sobrevive_ida_e_volta_pelo_banco()
     {
         // Nome único por execução: o volume do Postgres é persistente e o reset da fixture não
         // esvazia esta tabela (ela não faz parte do conjunto de dados de domínio/Identity).
         var nomeAmigavel = $"chave-de-teste-hardening-{Guid.NewGuid():N}";
-        const string xml = "<key id=\"chave-de-teste-hardening\" version=\"1\"><creationDate>2026-11-04T00:00:00Z</creationDate></key>";
+        var idDaChave = Guid.NewGuid();
+        var xml = $"<key id=\"{idDaChave}\" version=\"1\"><creationDate>2026-11-04T00:00:00Z</creationDate></key>";
 
-        using (var db = fixture.CreateDbContextCentral())
+        try
         {
-            db.DataProtectionKeys.Add(new DataProtectionKey
+            using (var db = fixture.CreateDbContextCentral())
             {
-                FriendlyName = nomeAmigavel,
-                Xml = xml,
-            });
+                db.DataProtectionKeys.Add(new DataProtectionKey
+                {
+                    FriendlyName = nomeAmigavel,
+                    Xml = xml,
+                });
 
-            await db.SaveChangesAsync();
+                await db.SaveChangesAsync();
+            }
+
+            // Contexto NOVO: prova que a chave foi para o banco, não para o change tracker.
+            using (var db = fixture.CreateDbContextCentral())
+            {
+                var chave = await db.DataProtectionKeys.SingleAsync(k => k.FriendlyName == nomeAmigavel);
+
+                Assert.Equal(nomeAmigavel, chave.FriendlyName);
+                Assert.Equal(xml, chave.Xml);
+                Assert.True(chave.Id > 0);
+            }
         }
-
-        // Contexto NOVO: prova que a chave foi para o banco, não para o change tracker.
-        using (var db = fixture.CreateDbContextCentral())
+        finally
         {
-            var chave = await db.DataProtectionKeys.SingleAsync(k => k.FriendlyName == nomeAmigavel);
-
-            Assert.Equal(nomeAmigavel, chave.FriendlyName);
-            Assert.Equal(xml, chave.Xml);
-            Assert.True(chave.Id > 0);
+            // Limpa a linha mesmo se um assert falhar, para não deixar resíduo para as próximas
+            // execuções (e para o keyring do app real em WebAppFixture).
+            using var db = fixture.CreateDbContextCentral();
+            await db.DataProtectionKeys
+                .Where(k => k.FriendlyName == nomeAmigavel)
+                .ExecuteDeleteAsync();
         }
     }
 }
