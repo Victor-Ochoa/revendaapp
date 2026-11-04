@@ -50,6 +50,7 @@ public class RegistrarDevolucaoVasilhameCommandHandlerTests
         var handler = new RegistrarDevolucaoVasilhameCommandHandler(
             db,
             TenantTeste.Contexto(),
+            TimeProvider.System,
             new FakeAuthenticationStateProvider("maria@teste.com"),
             new FakeUsuarioAutenticado(ehAdmin: true));
 
@@ -76,13 +77,33 @@ public class RegistrarDevolucaoVasilhameCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_DeveGravarOInstanteDoTimeProvider_EmDevolvidoEm()
+    {
+        // A quitação do empréstimo grava DevolvidoEm; o instante precisa vir do TimeProvider do
+        // handler para a auditoria ser determinística e coerente com o restante da operação.
+        var (db, cliente, produto) = await CriarClienteEProdutoAsync(estoqueCheio: 10);
+        var emprestimo = await RegistrarEmprestimoAsync(db, cliente.Id, produto.Id, 5);
+        var instante = new DateTime(2026, 3, 1, 12, 0, 0, DateTimeKind.Utc);
+        var handler = new RegistrarDevolucaoVasilhameCommandHandler(
+            db, TenantTeste.Contexto(), new FakeTimeProvider(instante),
+            usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+
+        await handler.Handle(
+            new RegistrarDevolucaoVasilhameCommand(cliente.Id, produto.Id, 5),
+            CancellationToken.None);
+
+        var emprestimoAtualizado = await db.EmprestimosVasilhames.FindAsync(emprestimo.Id);
+        Assert.Equal(instante, emprestimoAtualizado!.DevolvidoEm);
+    }
+
+    [Fact]
     public async Task Handle_SemEstoqueCheio_DeveQuitarEmprestimo_EDevolverVaziosAoDisponivel()
     {
         // A devolução de vazio volta ao estoque de vazios disponíveis, independente de estoque cheio
         // (a decisão anterior de "reabastecer o Estoque" foi revertida — devolução NÃO toca Estoque).
         var (db, cliente, produto) = await CriarClienteEProdutoAsync(estoqueCheio: 2); // < 5 devolvidos
         var emprestimo = await RegistrarEmprestimoAsync(db, cliente.Id, produto.Id, 5);
-        var handler = new RegistrarDevolucaoVasilhameCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new RegistrarDevolucaoVasilhameCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
 
         var sucesso = await handler.Handle(
             new RegistrarDevolucaoVasilhameCommand(cliente.Id, produto.Id, 5),
@@ -107,7 +128,7 @@ public class RegistrarDevolucaoVasilhameCommandHandlerTests
     {
         var (db, cliente, produto) = await CriarClienteEProdutoAsync(estoqueCheio: 10);
         var emprestimo = await RegistrarEmprestimoAsync(db, cliente.Id, produto.Id, 10);
-        var handler = new RegistrarDevolucaoVasilhameCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new RegistrarDevolucaoVasilhameCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
 
         var sucesso = await handler.Handle(
             new RegistrarDevolucaoVasilhameCommand(cliente.Id, produto.Id, 4),
@@ -131,7 +152,7 @@ public class RegistrarDevolucaoVasilhameCommandHandlerTests
     {
         var (db, cliente, produto) = await CriarClienteEProdutoAsync(estoqueCheio: 10);
         var emprestimo = await RegistrarEmprestimoAsync(db, cliente.Id, produto.Id, 5);
-        var handler = new RegistrarDevolucaoVasilhameCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new RegistrarDevolucaoVasilhameCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             handler.Handle(
@@ -156,7 +177,7 @@ public class RegistrarDevolucaoVasilhameCommandHandlerTests
         var (db, cliente, produto) = await CriarClienteEProdutoAsync(estoqueCheio: 10);
         var antigo = await RegistrarEmprestimoAsync(db, cliente.Id, produto.Id, 6, new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Utc));
         var novo = await RegistrarEmprestimoAsync(db, cliente.Id, produto.Id, 4, new DateTime(2026, 2, 1, 10, 0, 0, DateTimeKind.Utc));
-        var handler = new RegistrarDevolucaoVasilhameCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new RegistrarDevolucaoVasilhameCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
 
         var sucesso = await handler.Handle(
             new RegistrarDevolucaoVasilhameCommand(cliente.Id, produto.Id, 6),
@@ -184,7 +205,7 @@ public class RegistrarDevolucaoVasilhameCommandHandlerTests
     {
         var (db, cliente, produto) = await CriarClienteEProdutoAsync(estoqueCheio: 10);
         await RegistrarEmprestimoAsync(db, cliente.Id, produto.Id, 5);
-        var handler = new RegistrarDevolucaoVasilhameCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: false));
+        var handler = new RegistrarDevolucaoVasilhameCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: false));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             handler.Handle(

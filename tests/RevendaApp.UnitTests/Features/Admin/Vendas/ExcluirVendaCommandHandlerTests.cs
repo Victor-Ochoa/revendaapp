@@ -40,10 +40,27 @@ public class ExcluirVendaCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_DeveGravarOInstanteDoTimeProvider_EmExcluidaEm()
+    {
+        // O handler precisa carimbar o instante do seu TimeProvider (e não DateTime.UtcNow), senão a
+        // auditoria não é determinística nem coerente com o relógio usado no resto da operação.
+        var (db, _, _, venda) = await CriarVendaAsync(forma: FormaPagamento.Dinheiro, quantidade: 1);
+        var instante = new DateTime(2026, 3, 1, 12, 0, 0, DateTimeKind.Utc);
+        var handler = new ExcluirVendaCommandHandler(
+            db, TenantTeste.Contexto(), new FakeTimeProvider(instante),
+            usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+
+        await handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None);
+
+        var vendaAtual = await db.Vendas.FindAsync(venda.Id);
+        Assert.Equal(instante, vendaAtual!.ExcluidaEm);
+    }
+
+    [Fact]
     public async Task Handle_DeveExcluirLogicamente_EstornandoEstoqueESaldoFiado()
     {
         var (db, cliente, produto, venda) = await CriarVendaAsync(forma: FormaPagamento.Fiado, quantidade: 2); // 200 fiado
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
 
         var resultado = await handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None);
 
@@ -75,7 +92,7 @@ public class ExcluirVendaCommandHandlerTests
         await db.SaveChangesAsync();
         Assert.Equal(1, produto.QuantidadeVasilhames);
 
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
         var resultado = await handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None);
 
         Assert.True(resultado.Sucesso);
@@ -124,7 +141,7 @@ public class ExcluirVendaCommandHandlerTests
         await db.SaveChangesAsync();
         Assert.Equal(3, (await db.Produtos.FindAsync(produto.Id))!.QuantidadeVasilhamesEmprestados);
 
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
         var resultado = await handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None);
 
         // Sem exceção; venda excluída; contador INTACTO (3) — a reversão não decrementou linhas
@@ -153,7 +170,7 @@ public class ExcluirVendaCommandHandlerTests
         await db.SaveChangesAsync();
         Assert.Equal(0, (await db.Produtos.FindAsync(produto.Id))!.QuantidadeVasilhamesEmprestados);
 
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
         var resultado = await handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None);
 
         // Sem exceção; contador INTACTO (0 — a devolução manual já quitou); Estoque reabastecido
@@ -177,7 +194,7 @@ public class ExcluirVendaCommandHandlerTests
         await db.SaveChangesAsync();
         Assert.Equal(2, produto.QuantidadeVasilhamesEmprestados);
 
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
         var resultado = await handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None);
 
         Assert.True(resultado.Sucesso);
@@ -192,7 +209,7 @@ public class ExcluirVendaCommandHandlerTests
         var (db, _, _, venda) = await CriarVendaAsync(forma: FormaPagamento.Dinheiro, quantidade: 2); // 200, pagamento 200
         Assert.Single(db.Pagamentos);
 
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
         await handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None);
 
         Assert.Empty(db.Pagamentos);
@@ -206,7 +223,7 @@ public class ExcluirVendaCommandHandlerTests
         cliente.RegistrarPagamento(150m);
         await db.SaveChangesAsync();
 
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None).AsTask());
@@ -222,7 +239,7 @@ public class ExcluirVendaCommandHandlerTests
         venda.Excluir();
         await db.SaveChangesAsync();
 
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None).AsTask());
@@ -232,7 +249,7 @@ public class ExcluirVendaCommandHandlerTests
     public async Task Handle_DeveLancar_QuandoVendaNaoExiste()
     {
         using var db = InMemoryDbContextFactory.Create(TenantTeste.EmpresaId);
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             handler.Handle(new ExcluirVendaCommand(Guid.NewGuid()), CancellationToken.None).AsTask());
@@ -242,7 +259,7 @@ public class ExcluirVendaCommandHandlerTests
     public async Task Handle_DeveLancar_QuandoUsuarioNaoAdmin()
     {
         var (db, _, _, venda) = await CriarVendaAsync();
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: false));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: false));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None).AsTask());
@@ -271,7 +288,7 @@ public class ExcluirVendaCommandHandlerTests
         Assert.Equal(2, (await db.Produtos.FindAsync(produto.Id))!.QuantidadeVasilhamesEmprestados);
         Assert.Single(db.EmprestimosVasilhames);
 
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
         await handler.Handle(new ExcluirVendaCommand(resultado.VendaId), CancellationToken.None);
 
         var produtoAtual = await db.Produtos.FindAsync(produto.Id);
@@ -287,7 +304,7 @@ public class ExcluirVendaCommandHandlerTests
     public async Task Handle_DeveEstornarEstoque_QuandoNaoFiado()
     {
         var (db, _, produto, venda) = await CriarVendaAsync(forma: FormaPagamento.Dinheiro, quantidade: 3); // 300
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
 
         await handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None);
 
@@ -324,7 +341,7 @@ public class ExcluirVendaCommandHandlerTests
         Assert.Equal(5, (await db.Produtos.FindAsync(produto.Id))!.QuantidadeVasilhamesEmprestados);
         Assert.Equal(2, db.EmprestimosVasilhames.Count(e => e.DevolvidoEm == null));
 
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
         await handler.Handle(new ExcluirVendaCommand(resultado.VendaId), CancellationToken.None);
 
         // Reversão: Emprestados −2 → 3; a linha da venda removida; a antiga (DevolvidoEm null) preservada.
@@ -370,7 +387,7 @@ public class ExcluirVendaCommandHandlerTests
         // Pré-condição: recorrência existe com o par.
         Assert.Single(db.RecorrenciasCompra);
 
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
         await handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None);
 
         // Após excluir a única venda, a recorrência deve ser removida.
@@ -396,7 +413,7 @@ public class ExcluirVendaCommandHandlerTests
         Assert.Equal(2, recAntes.QuantidadeCompras);
 
         // Exclui a venda MAIS NOVA (vendaNova): restam só a antiga → recorrência vira 1 compra / default.
-        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
         await handler.Handle(new ExcluirVendaCommand(vendaNova.Id), CancellationToken.None);
 
         var recDepois = db.RecorrenciasCompra.Single();

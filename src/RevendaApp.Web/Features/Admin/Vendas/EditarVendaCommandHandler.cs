@@ -22,6 +22,7 @@ namespace RevendaApp.Web.Features.Admin.Vendas;
 public sealed class EditarVendaCommandHandler(
     AppDbContext db,
     ITenantContext tenant,
+    TimeProvider timeProvider,
     IUsuarioAutenticado? usuarioAutenticado = null,
     AuthenticationStateProvider? authStateProvider = null,
     VendasAtualizadasNotifier? notifier = null)
@@ -63,7 +64,7 @@ public sealed class EditarVendaCommandHandler(
 
         // Marca a venda antiga como excluída ANTES de re-criar, para que as queries (que filtram
         // por ExcluidaEm == null) não a considerem durante toda a transação.
-        venda.Excluir();
+        venda.Excluir(timeProvider.GetUtcNow().UtcDateTime);
 
         // Reverte o impacto da venda original (saldo devedor fiado + estoque + pagamento de venda paga).
         await ReversaoVendaHelper.ReverterAsync(db, venda, cancellationToken);

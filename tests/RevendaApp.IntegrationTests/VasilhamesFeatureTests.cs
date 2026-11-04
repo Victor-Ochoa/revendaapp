@@ -109,7 +109,7 @@ public class VasilhamesFeatureTests(DatabaseFixture fixture) : IClassFixture<Dat
         var venda = await RegistrarVendaEmprestimoAsync(db, produtoId, 5);
         var clienteId = venda.ClienteId;
 
-        await new RegistrarDevolucaoVasilhameCommandHandler(db, TenantIntegracao.Contexto()).Handle(
+        await new RegistrarDevolucaoVasilhameCommandHandler(db, TenantIntegracao.Contexto(), TimeProvider.System).Handle(
             new RegistrarDevolucaoVasilhameCommand(clienteId, produtoId, 2, "Devolução manual"),
             CancellationToken.None);
 
@@ -134,7 +134,7 @@ public class VasilhamesFeatureTests(DatabaseFixture fixture) : IClassFixture<Dat
         var venda = await RegistrarVendaEmprestimoAsync(db, produtoId, 4);
         var clienteId = venda.ClienteId;
 
-        await new RegistrarDevolucaoVasilhameCommandHandler(db, TenantIntegracao.Contexto()).Handle(
+        await new RegistrarDevolucaoVasilhameCommandHandler(db, TenantIntegracao.Contexto(), TimeProvider.System).Handle(
             new RegistrarDevolucaoVasilhameCommand(clienteId, produtoId, 2, "Devolução em estoque vazio"),
             CancellationToken.None);
 
@@ -153,7 +153,7 @@ public class VasilhamesFeatureTests(DatabaseFixture fixture) : IClassFixture<Dat
         var venda = await RegistrarVendaEmprestimoAsync(db, produtoId, 3);
         var clienteId = venda.ClienteId;
 
-        await new RegistrarDevolucaoVasilhameCommandHandler(db, TenantIntegracao.Contexto()).Handle(
+        await new RegistrarDevolucaoVasilhameCommandHandler(db, TenantIntegracao.Contexto(), TimeProvider.System).Handle(
             new RegistrarDevolucaoVasilhameCommand(clienteId, produtoId, 3, "Quitação total"),
             CancellationToken.None);
 
@@ -172,7 +172,7 @@ public class VasilhamesFeatureTests(DatabaseFixture fixture) : IClassFixture<Dat
         var venda = await RegistrarVendaEmprestimoAsync(db, produtoId, 4);
 
         // Estorno via ExcluirVendaCommandHandler → ReversaoVendaHelper.ReverterAsync.
-        await new ExcluirVendaCommandHandler(db, TenantIntegracao.Contexto()).Handle(new ExcluirVendaCommand(venda.VendaId), CancellationToken.None);
+        await new ExcluirVendaCommandHandler(db, TenantIntegracao.Contexto(), TimeProvider.System).Handle(new ExcluirVendaCommand(venda.VendaId), CancellationToken.None);
 
         var produto = await db.Produtos.FindAsync([produtoId]);
         Assert.Equal(0, produto!.QuantidadeVasilhamesEmprestados); // reverteram o vasilhame

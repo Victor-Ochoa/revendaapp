@@ -47,7 +47,7 @@ public class AdminVendasFeatureTests(DatabaseFixture fixture) : IClassFixture<Da
             CancellationToken.None);
 
         // Exclui a venda2.
-        await new ExcluirVendaCommandHandler(db, TenantIntegracao.Contexto()).Handle(new ExcluirVendaCommand(venda2.VendaId), CancellationToken.None);
+        await new ExcluirVendaCommandHandler(db, TenantIntegracao.Contexto(), TimeProvider.System).Handle(new ExcluirVendaCommand(venda2.VendaId), CancellationToken.None);
 
         var listadas = await new ListarVendasQueryHandler(db, TenantIntegracao.Contexto()).Handle(new ListarVendasQuery(), CancellationToken.None);
 
@@ -71,7 +71,7 @@ public class AdminVendasFeatureTests(DatabaseFixture fixture) : IClassFixture<Da
         Assert.Equal(300m, clientes.Single().SaldoDevedor);
 
         // Edita para 1 unidade (100) — o saldo deve recalcular para 100.
-        var editado = await new EditarVendaCommandHandler(db, TenantIntegracao.Contexto()).Handle(
+        var editado = await new EditarVendaCommandHandler(db, TenantIntegracao.Contexto(), TimeProvider.System).Handle(
             new EditarVendaCommand(resultado.VendaId, FormaPagamento.Fiado, 0m,
                 [new ItemVendaInput(produtoId, 1)]),
             CancellationToken.None);
@@ -103,7 +103,7 @@ public class AdminVendasFeatureTests(DatabaseFixture fixture) : IClassFixture<Da
         var clientes = await new ListarClientesQueryHandler(db, TenantIntegracao.Contexto()).Handle(new ListarClientesQuery(), CancellationToken.None);
         Assert.Equal(200m, clientes.Single().SaldoDevedor);
 
-        await new ExcluirVendaCommandHandler(db, TenantIntegracao.Contexto()).Handle(new ExcluirVendaCommand(resultado.VendaId), CancellationToken.None);
+        await new ExcluirVendaCommandHandler(db, TenantIntegracao.Contexto(), TimeProvider.System).Handle(new ExcluirVendaCommand(resultado.VendaId), CancellationToken.None);
 
         clientes = await new ListarClientesQueryHandler(db, TenantIntegracao.Contexto()).Handle(new ListarClientesQuery(), CancellationToken.None);
         Assert.Equal(0m, clientes.Single().SaldoDevedor);
@@ -139,6 +139,6 @@ public class AdminVendasFeatureTests(DatabaseFixture fixture) : IClassFixture<Da
             .Handle(new RevendaApp.Web.Features.Clientes.Pagar.RegistrarPagamentoCommand(clienteId, 150m, FormaPagamento.Dinheiro), CancellationToken.None);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            new ExcluirVendaCommandHandler(db, TenantIntegracao.Contexto()).Handle(new ExcluirVendaCommand(resultado.VendaId), CancellationToken.None).AsTask());
+            new ExcluirVendaCommandHandler(db, TenantIntegracao.Contexto(), TimeProvider.System).Handle(new ExcluirVendaCommand(resultado.VendaId), CancellationToken.None).AsTask());
     }
 }

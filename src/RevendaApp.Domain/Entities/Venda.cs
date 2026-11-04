@@ -79,7 +79,11 @@ public class Venda
     /// Marca a venda como excluída (soft delete). A primeira chamada registra o momento; chamadas
     /// seguintes são inócuas (preservam o registro original para auditoria).
     /// </summary>
-    public void Excluir() => ExcluidaEm ??= DateTime.UtcNow;
+    /// <param name="agora">
+    /// Instante da exclusão. O handler passa o <c>TimeProvider</c> para manter a auditoria coerente e
+    /// testável; omitido, usa <see cref="DateTime.UtcNow"/>.
+    /// </param>
+    public void Excluir(DateTime? agora = null) => ExcluidaEm ??= agora ?? DateTime.UtcNow;
 
     /// <summary>
     /// Marca uma venda fiado como quitada (usada quando um pagamento do cliente abate o saldo
