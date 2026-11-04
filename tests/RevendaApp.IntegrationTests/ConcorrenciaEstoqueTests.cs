@@ -2,6 +2,10 @@ using Microsoft.EntityFrameworkCore;
 
 using RevendaApp.Domain.Entities;
 using RevendaApp.Domain.Enums;
+using RevendaApp.IntegrationTests.TestHelpers;
+using RevendaApp.Web.Common;
+using RevendaApp.Web.Common.Behaviors;
+using RevendaApp.Web.Features.Clientes.Pagar;
 
 namespace RevendaApp.IntegrationTests.Tests;
 
@@ -66,5 +70,63 @@ public class ConcorrenciaEstoqueTests(DatabaseFixture fixture) : IClassFixture<D
 
         clienteB.RegistrarPagamento(40m);
         await Assert.ThrowsAsync<DbUpdateConcurrencyException>(() => caixaB.SaveChangesAsync());
+    }
+
+    /// <summary>
+    /// Regressão do bug crítico: depois de um conflito traduzido pelo
+    /// <see cref="ConcorrenciaBehavior{TMessage,TResponse}"/>, o change tracker precisa ficar vazio.
+    /// Sem a limpeza, o <c>Pagamento</c> pendente da tentativa que falhou seria commitado pela
+    /// próxima operação do mesmo circuito Blazor (que é scoped e não é recriado ao fechar o modal) —
+    /// um pagamento fantasma que o operador acredita nunca ter acontecido.
+    /// </summary>
+    [Fact]
+    public async Task Conflito_traduzido_nao_deixa_operacao_fantasma_para_o_proximo_save()
+    {
+        Guid clienteId;
+        await using (var preparo = fixture.CreateDbContext())
+        {
+            var cliente = new Cliente("Maria Souza", "11988887777", "Rua A, 1");
+            cliente.AdicionarSaldoDevedor(100m);
+            preparo.Clientes.Add(cliente);
+            await preparo.SaveChangesAsync();
+            clienteId = cliente.Id;
+        }
+
+        await using var caixa = fixture.CreateDbContext();
+
+        // O circuito já tinha o cliente carregado (é o que acontece na tela: o operador abriu o
+        // detalhe antes). É essa leitura anterior que deixa o `xmin` defasado.
+        _ = await caixa.Clientes.SingleAsync(c => c.Id == clienteId);
+
+        // Outra requisição grava o mesmo cliente depois da nossa leitura.
+        await using (var concorrente = fixture.CreateDbContext())
+        {
+            var clienteConcorrente = await concorrente.Clientes.SingleAsync(c => c.Id == clienteId);
+            clienteConcorrente.RegistrarPagamento(10m);
+            await concorrente.SaveChangesAsync();
+        }
+
+        var handler = new RegistrarPagamentoCommandHandler(caixa, TenantIntegracao.Contexto(), new VendasAtualizadasNotifier());
+        var behavior = new ConcorrenciaBehavior<RegistrarPagamentoCommand, RegistrarPagamentoResult>(caixa);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await behavior.Handle(
+                new RegistrarPagamentoCommand(clienteId, 40m, FormaPagamento.Dinheiro),
+                (mensagem, ct) => handler.Handle((RegistrarPagamentoCommand)mensagem, ct),
+                CancellationToken.None));
+
+        Assert.Equal(Concorrencia.Mensagem, ex.Message);
+
+        // O tracker tem que estar limpo — é o que impede o commit fantasma abaixo.
+        Assert.Empty(caixa.ChangeTracker.Entries());
+
+        // Uma operação seguinte no MESMO contexto (o que o operador faria ao fechar o modal) não
+        // pode gravar o pagamento da tentativa que falhou.
+        await caixa.SaveChangesAsync();
+
+        await using var verificacao = fixture.CreateDbContext();
+        var pagamentos = await verificacao.Pagamentos.Where(p => p.ClienteId == clienteId).ToListAsync();
+        Assert.Empty(pagamentos);
+        Assert.Equal(90m, (await verificacao.Clientes.SingleAsync(c => c.Id == clienteId)).SaldoDevedor);
     }
 }

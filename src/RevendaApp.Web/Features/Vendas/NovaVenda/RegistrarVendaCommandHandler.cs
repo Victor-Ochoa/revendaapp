@@ -17,12 +17,10 @@ public sealed class RegistrarVendaCommandHandler(AppDbContext db, ITenantContext
 {
     /// <summary>
     /// Mensagem exibida quando outra operação alterou o mesmo produto/cliente entre a leitura e a
-    /// gravação (venda simultânea do último item, pagamento concorrente). Recarregar e repetir é a
-    /// ação correta do operador.
+    /// gravação (venda simultânea do último item, pagamento concorrente). A tradução da exceção é
+    /// feita pelo <c>ConcorrenciaBehavior</c>; esta constante apenas expõe o texto compartilhado.
     /// </summary>
-    public const string MensagemConflito =
-        "Os dados deste produto ou cliente foram alterados por outra operação enquanto você finalizava. "
-        + "Recarregue a tela e tente novamente.";
+    public const string MensagemConflito = Concorrencia.Mensagem;
 
     public async ValueTask<RegistrarVendaResult> Handle(RegistrarVendaCommand command, CancellationToken cancellationToken)
     {
@@ -34,18 +32,9 @@ public sealed class RegistrarVendaCommandHandler(AppDbContext db, ITenantContext
         var resultado = await RegistrarAsync(db, command, vendedorId, usuario, cancellationToken);
 
         // Persiste a venda (itens, movimentações, pagamento e histórico). O token `xmin` de
-        // Produto/Cliente detecta que outra operação gravou a mesma linha depois da nossa leitura —
-        // nesse caso a operação inteira é recusada em vez de gravar estoque/saldo inconsistentes.
-        // A execution strategy do Npgsql não reexecuta este erro (não é transitório): recarregar e
-        // repetir exige reconstruir o estado da operação, então o operador é orientado a refazer.
-        try
-        {
-            await db.SaveChangesAsync(cancellationToken);
-        }
-        catch (DbUpdateConcurrencyException)
-        {
-            throw new InvalidOperationException(MensagemConflito);
-        }
+        // Produto/Cliente detecta que outra operação gravou a mesma linha depois da nossa leitura;
+        // o `ConcorrenciaBehavior` traduz o conflito e limpa o change tracker.
+        await db.SaveChangesAsync(cancellationToken);
 
         // Recalcula a recorrência de recompra dos produtos com aviso (após persistir: o motor
         // consulta o banco e só enxerga a venda recém-criada depois do save acima).
