@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 using MudBlazor.Utilities;
 
 using RevendaApp.Web.Theme;
@@ -41,4 +43,17 @@ internal static class CorPrimaria
     /// </summary>
     internal static MudColor ParaPicker(string? hex)
         => MudColor.TryParse(hex, out var cor) ? cor : new MudColor(Padrao);
+
+    /// <summary>
+    /// Diz se o valor gravado já está no formato que o validador aceita (a <b>mesma</b> expressão
+    /// de <see cref="EditarConfigEmpresaCommandValidator"/>).
+    /// </summary>
+    /// <remarks>
+    /// Serve para <b>não reescrever</b> um valor válido ao carregar a aba. <see cref="ParaHex"/>
+    /// devolve minúsculas, e a auditoria compara com <see cref="StringComparison.Ordinal"/>: trocar
+    /// <c>#0A1F44</c> por <c>#0a1f44</c> gravaria uma alteração de cor que não houve — em todo
+    /// salvamento, inclusive os que só mexeram em outro campo.
+    /// </remarks>
+    internal static bool EhHexValido(string? hex)
+        => hex is not null && Regex.IsMatch(hex, "^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$");
 }

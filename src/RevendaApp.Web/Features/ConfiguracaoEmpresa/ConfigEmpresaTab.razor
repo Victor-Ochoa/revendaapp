@@ -146,10 +146,12 @@ else
             var corCarregada = CorPrimaria.ParaPicker(_detalhe.CorPrimaria);
             _corSelecionada = corCarregada;
 
-            // Normaliza `_corPrimaria` a partir da cor efetivamente exibida: se o banco tinha um
-            // valor inválido, o picker mostra a padrão, e Salvar tem de enviar essa mesma cor —
-            // senão o admin vê #0A1F44 na tela e recebe um erro de formato ao salvar.
-            _corPrimaria = CorPrimaria.ParaHex(corCarregada);
+            // Só normaliza quando o valor gravado NÃO é um hex válido: reescrever um valor válido mudaria
+            // o casing (#0A1F44 → #0a1f44) e geraria uma linha de auditoria falsa em todo salvamento.
+            // Quando inválido, o picker exibe a cor padrão, e Salvar tem de enviar essa mesma cor.
+            _corPrimaria = CorPrimaria.EhHexValido(_detalhe.CorPrimaria)
+                ? _detalhe.CorPrimaria
+                : CorPrimaria.ParaHex(corCarregada);
             _logo = _detalhe.Logo;
             _telefones = _detalhe.Telefones.ToList();
         }
@@ -183,10 +185,10 @@ else
     /// (6 dígitos, sem alfa). É esse valor que <see cref="SalvarAsync"/> envia no comando.
     /// </summary>
     /// <remarks>
-    /// O parâmetro é <c>MudColor?</c> de propósito: o <c>MudColorPicker</c> entrega <b>null</b> ao
-    /// <c>ValueChanged</c> quando o usuário limpa o campo hex (o argumento declarado é
-    /// <c>MudColor</c>, então o compilador não avisa). Sem o guard, o null dereferenciado derruba o
-    /// circuito e o admin perde o formulário inteiro.
+    /// O parâmetro é <c>MudColor?</c> de propósito: o <c>MudColorPicker</c> pode entregar
+    /// <b>null</b> ao <c>ValueChanged</c> quando o usuário limpa o campo hex, e o binding
+    /// <c>EventCallback&lt;MudColor?&gt;</c> aceita o handler anulável sem aviso. Sem o guard, o
+    /// null dereferenciado derruba o circuito e o admin perde o formulário inteiro.
     /// </remarks>
     private void AoMudarCor(MudColor? cor)
     {

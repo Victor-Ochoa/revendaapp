@@ -70,6 +70,39 @@ public class ConfigEmpresaCorTests
     }
 
     /// <summary>
+    /// Um valor já válido <b>não</b> pode ser reescrito: <c>ParaHex</c> devolve minúsculas e a
+    /// comparação da auditoria é ordinal (<see cref="StringComparison.Ordinal"/>), então
+    /// `#0A1F44` → `#0a1f44` viraria uma linha falsa "Cor primária" em todo salvamento — e um
+    /// salvamento que só mexeu em telefone. Ruído na trilha esconde os eventos que importam.
+    /// </summary>
+    [Theory]
+    [InlineData("#0A1F44")]  // 6 dígitos, caixa alta (como está gravado hoje)
+    [InlineData("#abc")]     // 3 dígitos
+    [InlineData("#FFFFFF")]  // 6 dígitos, tudo maiúsculo
+    [InlineData("#0a1f44")]  // 6 dígitos, minúsculo (também é válido)
+    public void Cor_valida_no_banco_e_reconhecida_como_hex(string entrada)
+    {
+        Assert.True(CorPrimaria.EhHexValido(entrada));
+    }
+
+    /// <summary>
+    /// O complemento: valores nulos, vazios, com espaços ou lixo não são hex válido e caem no
+    /// fallback da cor padrão (o picker e o valor enviado precisam concordar).
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("nao-e-cor")]
+    [InlineData("#12345")]    // 5 dígitos
+    [InlineData("#GGGGGG")]   // dígitos inválidos
+    [InlineData("#0A1F44FF")] // com alfa: o validador não aceita 8 dígitos
+    public void Cor_invalida_no_banco_nao_e_reconhecida_como_hex(string? entrada)
+    {
+        Assert.False(CorPrimaria.EhHexValido(entrada));
+    }
+
+    /// <summary>
     /// (c) Fiação de ponta a ponta: uma cor escolhida no picker chega ao
     /// <see cref="EditarConfigEmpresaCommand"/> no formato que o validador aceita.
     /// </summary>
@@ -112,10 +145,36 @@ public class ConfigEmpresaCorTests
     }
 
     /// <summary>
+    /// Salvar sem mexer na cor tem de reenviar o valor gravado <b>exatamente</b> como está: a
+    /// auditoria compara com <see cref="StringComparison.Ordinal"/>, então normalizar `#0A1F44`
+    /// para `#0a1f44` gravaria uma alteração que não houve.
+    /// </summary>
+    [Fact]
+    public async Task Salvar_sem_editar_a_cor_preserva_o_valor_gravado_verbatim()
+    {
+        await using var ctx = new BunitContext();
+        ctx.JSInterop.Mode = JSRuntimeMode.Loose;
+        ctx.Services.AddMudServices();
+        ctx.Services.AddSingleton<AntiforgeryStateProvider, AntiforgerySemToken>();
+        var sender = new SenderQueCapturaConfigEmpresa();
+        ctx.Services.AddSingleton<ISender>(sender);
+
+        var cut = ctx.Render<ConfigEmpresaTab>();
+
+        cut.WaitForAssertion(() => Assert.Contains("Salvar", cut.Markup, StringComparison.Ordinal));
+
+        cut.Find("button.mud-button-filled").Click();
+
+        cut.WaitForAssertion(() => Assert.NotNull(sender.ComandoCapturado));
+
+        // `#0A1F44` (caixa alta) é o que está no banco: o comando tem de devolver o mesmo texto.
+        Assert.Equal("#0A1F44", sender.ComandoCapturado!.CorPrimaria, StringComparer.Ordinal);
+    }
+
+    /// <summary>
     /// Limpar a cor no picker (<c>ClearAsync</c>, alcançável pela UI pelo switch de modo) entrega
-    /// <b>null</b> ao <c>ValueChanged</c> — o argumento genérico declarado é <c>MudColor</c>, não
-    /// <c>MudColor?</c>, então o compilador não avisa. Um handler que dereferencia o valor nulo
-    /// derruba o circuito Blazor e o admin perde o formulário inteiro.
+    /// <b>null</b> ao <c>ValueChanged</c>. Um handler que dereferencia o valor nulo derruba o
+    /// circuito Blazor e o admin perde o formulário inteiro.
     /// </summary>
     /// <remarks>
     /// O teste falha antes do guard (a exceção sobe pelo callback) e passa depois: o componente
