@@ -26,4 +26,9 @@
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Helper interno (CorPrimaria) provado por teste unitário sem renderizar Blazor. -->
+    <InternalsVisibleTo Include="RevendaApp.UnitTests" />
+  </ItemGroup>
+
 </Project>
