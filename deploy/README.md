@@ -81,18 +81,24 @@ Encrypt válido). Login com o email/senha de `Parameters:seed-admin-email/-passw
 
 - **Chaves de Data Protection no Postgres.** As chaves ficam na tabela `DataProtectionKeys` do banco
   (`PersistKeysToDbContext`), não no filesystem efêmero do container. Reiniciar o container **não**
-  desloga os usuários, e duas réplicas compartilham as mesmas chaves — a sessão sobrevive à troca de
-  instância. Não troque isso por persistência em arquivo: cada restart geraria chaves novas e
-  invalidaria todos os cookies de autenticação e tokens antiforgery já emitidos.
+  desloga os usuários, e duas réplicas compartilham as mesmas chaves — a autenticação (cookie e
+  tokens antiforgery) sobrevive à troca de instância. O circuito Blazor em si, por ser em memória,
+  **não** sobrevive: o usuário cai na tela de reconexão, mas segue autenticado. Não troque isso por
+  persistência em arquivo: cada restart geraria chaves novas e invalidaria todos os cookies de
+  autenticação e tokens antiforgery já emitidos.
 - **`X-Forwarded-*` confiável só de loopback + RFC1918.** O Caddy no host faz `reverse_proxy` para a
   porta publicada do container, então o Kestrel enxerga o gateway da bridge do Docker. Sem esse
-  processamento o esquema real (`https`) fica invisível e o cookie `Secure` nunca é emitido. A lista
-  de redes é ajustável em `Proxy:RedesConfiaveis` (CIDRs separados por vírgula); um CIDR malformado
+  processamento o app acha que o esquema é `http`: o `UseHttpsRedirection`, as URLs absolutas e
+  redirects gerados saem com o esquema errado e o HSTS não é aplicado. O cookie de sessão não é
+  afetado — fora de Development o `SecurePolicy` é `Always`, independente do proxy. A lista de redes
+  é ajustável em `Proxy:RedesConfiaveis` (CIDRs separados por vírgula); um CIDR malformado
   **derruba o startup** de propósito.
-- **Recomendado: publique a porta do container só em loopback.** Use `127.0.0.1:8080:8080` no lugar
-  de `8080:8080`. Hoje a porta é alcançável pela NIC privada da VM: um par na mesma rede poderia
-  falar direto com o Kestrel e forjar `X-Forwarded-Proto` (e, com isso, o esquema/cookie). Publicando
-  em loopback só o Caddy do host chega ao app.
+- **Recomendado: publique as portas do container só em loopback.** Use `127.0.0.1:8080:8080` e
+  `127.0.0.1:8443:8080` no lugar de `8080:8080` e `8443:8080` — o raciocínio vale para **qualquer**
+  porta publicada que chegue ao listener HTTP do container, não só a 8080. Hoje elas são alcançáveis
+  pela NIC privada da VM: um par na mesma rede poderia falar direto com o Kestrel e forjar
+  `X-Forwarded-Proto` (e, com isso, o esquema das URLs e do redirect). Publicando em loopback só o
+  Caddy do host chega ao app.
 
 ## Atualizar secret do admin depois de criado
 O seed do admin é idempotente (`FindByEmailAsync`). Se o `seed-admin-password` mudar após o

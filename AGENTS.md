@@ -116,8 +116,7 @@ Leia esta seção inteira antes de mexer em qualquer handler, entidade ou consul
   `RegistrosAuditoria` (global, ver auditoria abaixo) e `DataProtectionKeys` (global por natureza:
   as chaves de criptografia valem para o processo inteiro, não para um tenant). A lista é
   **travada** por `tests/RevendaApp.UnitTests/Tenancy/FiltrosGlobaisTests.cs` — entidade nova
-  com/sem filtro obriga a
-  atualizar o teste e a decisão consciente.
+  com/sem filtro obriga a atualizar o teste e a decisão consciente.
 - **Fail-closed.** `ITenantContext.EmpresaId` só devolve `null` (modo central = vê todas as
   empresas) em dois casos: (a) **não autenticado** (seed, SSR estático, design-time) ou (b)
   autenticado com a claim `EhSuperAdmin = true`. Um usuário **autenticado, não-super-admin e sem
@@ -387,13 +386,14 @@ Este projeto é desenvolvido com TDD. Para qualquer novo caso de uso/handler:
   `EmpresaId`, sem filtro de tenant). Sem ele as chaves vão para o filesystem efêmero do container,
   cada restart gera chaves novas e **todo mundo é deslogado**; com duas réplicas, a sessão quebra ao
   trocar de instância.
-- **Não** remova o `UseForwardedHeaders` nem o `ForwardedHeadersConfig`: é o que faz o cookie
-  `Secure` sair corretamente atrás do Caddy. A confiança é loopback + RFC1918 porque o Caddy no host
-  alcança uma **porta publicada do container**, então o Kestrel vê o gateway da bridge do Docker,
-  não o loopback. Ajustável por `Proxy:RedesConfiaveis`; um CIDR malformado **lança no startup** de
-  propósito — um typo não pode alargar a confiança silenciosamente. Fora de Development o
-  `SecurePolicy` do cookie é `Always`: com `SameAsRequest`, um `X-Forwarded-Proto` forjado
-  rebaixaria a sessão para texto puro.
+- **Não** remova o `UseForwardedHeaders` nem o `ForwardedHeadersConfig`: é o que faz o app enxergar
+  o esquema real (`https`) atrás do Caddy — sem ele o `UseHttpsRedirection`, as URLs absolutas e
+  redirects gerados saem com `http`, e o HSTS não é aplicado. A confiança é loopback + RFC1918
+  porque o Caddy no host alcança uma **porta publicada do container**, então o Kestrel vê o gateway
+  da bridge do Docker, não o loopback. Ajustável por `Proxy:RedesConfiaveis`; um CIDR malformado
+  **lança no startup** de propósito — um typo não pode alargar a confiança silenciosamente. O
+  cookie de sessão não depende disso: fora de Development o `SecurePolicy` é `Always`, que é
+  justamente o que impede um `X-Forwarded-Proto` forjado de rebaixar a sessão para texto puro.
 - **Não** remova o `builder.Property<uint>("xmin").IsRowVersion()` de `Produto`/`Cliente`: é a única
   barreira contra duas vendas simultâneas do último item gravarem estoque negativo e contra dois
   pagamentos concorrentes sobrescreverem o `SaldoDevedor`. `UseXminAsConcurrencyToken()` não existe
