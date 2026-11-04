@@ -45,7 +45,9 @@ logo**, exibidos no app bar. Cores padrão do tema: **azul marinho e branco**.
   e registra o Identity via `AddIdentity<ApplicationUser, ApplicationRole>(...)` (com `UserManager`,
   `RoleManager` e `SignInManager`). `CookieAuthenticationOptions.LoginPath` é configurado para
   `/login` e `AccessDeniedPath` para `/sem-autorizacao` (página personalizada para usuário
-  autenticado sem a role exigida, via `AddIdentityCookies(o => o.ApplicationCookie.Configure(...))`).
+  autenticado sem a role exigida) via `ConfigureApplicationCookie(...)`. **Não** chame
+  `AddAuthentication().AddIdentityCookies()` de novo: o `AddIdentity` já registra o esquema
+  `Identity.Application` e a segunda chamada estoura `Scheme already exists` no startup.
   O bootstrap cria **apenas o super admin da central** — role `SuperAdmin`, `EmpresaId = null` (ver
   `Features/Auth/SeedData.cs`; credenciais via `SeedAdmin:Email`/`SeedAdmin:Password`, com defaults
   de desenvolvimento `admin@revenda.app.com.br`/`RevendaApp@123`; em Produção o seed **lança** se as
@@ -75,7 +77,8 @@ logo**, exibidos no app bar. Cores padrão do tema: **azul marinho e branco**.
   campo de formulário em página estática; componentes MudBlazor puramente apresentacionais
   (`MudPaper`, `MudText`, `MudAlert`, `MudButton` com `ButtonType.Submit`) funcionam normalmente.
   Páginas comuns (dashboards, listas, modais) devem declarar `@rendermode InteractiveServer`
-  (ver `Home.razor`) para poderem usar os componentes interativos do MudBlazor normalmente.
+  (ver `Features/Home/Dashboard.razor`) para poderem usar os componentes interativos do MudBlazor
+  normalmente.
 - **Central Package Management**: todas as versões de pacotes NuGet ficam em
   [Directory.Packages.props](/home/voch_silva/dev/opencode/revendaapp/Directory.Packages.props) na
   raiz. Os `.csproj` referenciam pacotes **sem** atributo `Version`.
@@ -179,6 +182,8 @@ Leia esta seção inteira antes de mexer em qualquer handler, entidade ou consul
   (ou os defaults de desenvolvimento `admin@revenda.app.com.br`/`RevendaApp@123`) — **não** é admin de
   empresa. Empresas são criadas pela central (`/central`).
 - **Build**: `dotnet build`
+- **Formatação**: `dotnet format RevendaApp.slnx --no-restore --verify-no-changes` (é o passo
+  `Format check` do CI; rode antes de abrir MR).
 - **Testes**: `dotnet test` (unitários + integração). Rodar só unitários:
   `dotnet test tests/RevendaApp.UnitTests` (rápido, InMemory). Rodar um teste específico:
   `dotnet test --filter FullyQualifiedName~NovaVendaFeatureTests`.
@@ -190,6 +195,46 @@ Leia esta seção inteira antes de mexer em qualquer handler, entidade ou consul
   formas de pagamento, pagamentos e movimentações de estoque com datas anteriores a hoje) se ainda
   não houver produtos na empresa demo.
 - **Migrations EF**: ver seção acima (exige `dotnet-ef`).
+
+## Funcionalidades além do fluxo básico
+
+- **Vasilhames** (`Features/Estoque/Vasilhames` + `Features/Clientes/Emprestimos`): produto com
+  `ControlaVasilhame` acompanha três contadores — cheios (`QuantidadeEstoque`), vazios disponíveis
+  (`QuantidadeVasilhames`) e emprestados (`QuantidadeVasilhamesEmprestados`). `EmprestimoVasilhame`
+  é a fonte da verdade de "quem tem quantos". Na venda, `ItemVenda.EhEmprestimo` distingue
+  **troca** (vazio volta ao depósito) de **empréstimo** (vazio fica com o cliente e vira débito de
+  vasilhame). Há empréstimo/devolução manuais (tela do cliente e aba do estoque) e a tela
+  "Pátio"/controle de vasilhames (`ObterControleVasilhamesQuery` + `VasilhameGraficoBuilder`).
+- **Recompra / recorrência** (`RecorrenciaCompra`, `Common/RecorrenciaCompraAprendizado.cs`):
+  produto com `AvisarRecompra` e `DiasPadraoRecompra` aprende o intervalo médio entre compras por
+  cliente (`IntervaloMedioDias`) e o dashboard lista quem passou da data prevista. O recálculo roda
+  **depois** do `SaveChanges` da venda (precisa enxergar a venda nova) e exige um segundo save.
+- **Editar/excluir venda** (`Features/Admin/Vendas`, restrito a `Admin`): a edição **reverte** os
+  efeitos da venda original (saldo devedor fiado, estoque, pagamento no ato) e **recria** a venda
+  pelo mesmo `RegistrarVendaCommandHandler.RegistrarAsync`, preservando a `DataHora` original e as
+  regras de preço. A exclusão é **lógica** (`ExcluidaEm`) com estorno. Ambos chamam
+  `ReversaoVendaHelper` e `RecorrenciaCompraAprendizado`, e disparam o `VendasAtualizadasNotifier`.
+  Toda a tela vive na aba **Vendas** de `/configuracoes`.
+
+## Helpers compartilhados (`RevendaApp.Web/Common`)
+
+Antes de reimplementar, verifique se já existe:
+
+| Helper | Papel |
+|---|---|
+| `TenantContext` / `ITenantContext` | Tenant por claims; `EmpresaIdRequerida` é a guarda de todo handler de domínio |
+| `TransacaoComRetry` | Transação explícita compatível com a execution strategy de retry do Npgsql (`EnableRetryOnFailure`); obrigatório quando há `BeginTransaction` |
+| `VendaQueries` | Consultas de venda compartilhadas (ex.: última entrega por cliente, sem N+1) |
+| `VendaItemCalculo` / `Venda` | Rateio de desconto e lucro por item |
+| `RecorrenciaCompraAprendizado` | Cálculo do intervalo de recompra |
+| `RegraDeAcesso` | Regra única "usuário ativo + empresa ativa", usada no login e na recarga de sessão |
+| `DestinoSeguro` | Validação de `returnUrl` (fecha open redirect) |
+| `ValidadeAbsolutaImpersonacao` | Teto absoluto de 8h da sessão impersonada, via claim imutável |
+| `RenovacaoPrincipalImpersonacao` | Preserva as claims de impersonation nas reemissões do principal |
+| `BrasilTimeZone` | Conversão UTC ↔ dia civil de Brasília (dashboard, histórico) |
+| `UsuarioAtual` | Nome/Id do usuário para histórico de estoque e `Venda.VendedorId` |
+| `EnumRotulos` | Rótulos pt-BR dos enums |
+| `IdentidadeEmpresaService` | Nome/cor/logo exibidos no app bar (memoiza o logo) |
 
 ## Refresh de telas em tempo real (Blazor Server)
 Telas que exibem dados de vendas (ex.: Dashboard) reagem a mudanças sem recarregar a página

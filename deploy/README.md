@@ -3,7 +3,9 @@
 Deploy para uma **VM Ubuntu da MagaluCloud**, replicando o padrão do projeto CapZeroApp:
 [aspire-ssh-deploy](https://github.com/davidfowl/aspire-ssh-deploy) gera o `docker-compose.yaml`,
 faz push das imagens para o container registry da Magalu e roda `docker compose up -d` na VM via SSH.
-O **Caddy** no host faz terminação TLS com **certificado auto-assinado** para o IP público.
+O **Caddy** no host faz terminação TLS com **certificado Let's Encrypt** para o hostname
+`revenda.app.<IP>.sslip.io` (ver [Caddyfile](Caddyfile)) — HTTPS válido, sem aviso do navegador.
+O certificado auto-assinado descrito mais abaixo é o caminho alternativo (apenas IP).
 
 ## VM alvo (confirmada)
 - IP público: `201.23.87.110` · usuário `ubuntu` · região `br-se1-a` · Ubuntu 24.04 LTS
@@ -24,11 +26,9 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker ubuntu   # re-login (exit e ssh de novo) p/ aplicar
 
 # 2. Caddy (terminação TLS)
+#    O Caddyfile versionado usa o hostname sslip.io e emite certificado Let's Encrypt
+#    automático (ACME HTTP-01 pela porta 80) — não precisa gerar certificado na mão.
 sudo apt install -y caddy
-sudo mkdir -p /etc/caddy/certs
-sudo openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-  -keyout /etc/caddy/certs/server.key -out /etc/caddy/certs/server.crt \
-  -subj "/CN=201.23.87.110"
 sudo cp deploy/Caddyfile /etc/caddy/Caddyfile    # da máquina de dev, ou cole o conteúdo
 sudo systemctl enable --now caddy
 
@@ -60,9 +60,12 @@ dotnet run --project src/RevendaApp.AppHost -- deploy
 #   - copia compose+.env via SSH e roda `docker compose up -d` na VM
 ```
 
-O app fica acessível em **`https://201.23.87.110`** (cert auto-assinado — o navegador avisará
-"não seguro"; aceite/avançar). Login com o email/senha de `Parameters:seed-admin-email/-password`.
-Dashboard Aspire (se habilitado via `.WithDashboard`): porta 8085.
+O app fica acessível em **`https://revenda.app.201.23.87.110.sslip.io`** (certificado Let's
+Encrypt válido). Login com o email/senha de `Parameters:seed-admin-email/-password`.
+
+> O `deploy.yml` do GitHub Actions roda `aspire deploy -e Production` a partir de `main`; ele **não**
+> depende do job de CI, então os dois disparam em paralelo no mesmo push. Se o deploy precisar
+> bloquear em testes verdes, troque o gatilho por `workflow_run` (após `CI` concluir com sucesso).
 
 ---
 
@@ -71,7 +74,7 @@ Dashboard Aspire (se habilitado via `.WithDashboard`): porta 8085.
 |---|---|---|
 | Postgres | Container (Docker Compose) | imagem gerada, volume persistente (`revendaapp-postgres-data`) |
 | Revenda.App Web | Container | `localhost:8080` HTTP, exposto `8080:8080` e `8443:8080` |
-| Caddy | Host (systemd) | `:443` TLS (cert auto-assinado) → `localhost:8080`; `:80` redireciona p/ `https://IP` |
+| Caddy | Host (systemd) | `:443` TLS (Let's Encrypt via sslip.io) → `localhost:8080`; `:80` usado pelo ACME |
 | Registry | Magalu Container Registry | `container-registry.br-se1.magalu.cloud/revendaapp` |
 
 ## Atualizar secret do admin depois de criado
