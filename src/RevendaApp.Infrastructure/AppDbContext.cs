@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 
@@ -39,7 +40,8 @@ namespace RevendaApp.Infrastructure;
 /// <c>AddNpgsqlDbContext</c> (que faz pooling e capturaria um tenant fixo da raiz).
 /// </para>
 /// </remarks>
-public class AppDbContext(DbContextOptions<AppDbContext> options, ITenantContext? tenant = null) : IdentityDbContext<ApplicationUser, ApplicationRole, Guid>(options)
+public class AppDbContext(DbContextOptions<AppDbContext> options, ITenantContext? tenant = null)
+    : IdentityDbContext<ApplicationUser, ApplicationRole, Guid>(options), IDataProtectionKeyContext
 {
     /// <summary>
     /// Empresa do tenant atual, consultada <b>a cada avaliação</b> (propriedade, não campo
@@ -83,6 +85,18 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, ITenantContext
     /// </para>
     /// </remarks>
     public DbSet<RegistroAuditoria> RegistrosAuditoria => Set<RegistroAuditoria>();
+
+    /// <summary>
+    /// Chaves de Data Protection (proteção de cookie de autenticação e de token antiforgery).
+    /// </summary>
+    /// <remarks>
+    /// Tabela <b>global</b>: sem <c>EmpresaId</c>, sem filtro por empresa e sem carimbo do
+    /// interceptor — as chaves valem para o processo inteiro, não para um tenant. Entra em
+    /// <c>SemFiltroEsperado</c> de <c>FiltrosGlobaisTests</c>. Persistir no banco (e não no
+    /// filesystem efêmero do container) é o que mantém os cookies válidos após um restart e
+    /// permite mais de uma réplica com as mesmas chaves.
+    /// </remarks>
+    public DbSet<DataProtectionKey> DataProtectionKeys => Set<DataProtectionKey>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {

@@ -23,12 +23,14 @@ namespace RevendaApp.UnitTests.Tenancy;
 public class FiltrosGlobaisTests
 {
     /// <summary>
-    /// Entidades <b>sem</b> filtro global: as do Identity, <c>Empresa</c> e a auditoria global.
+    /// Entidades <b>sem</b> filtro global: as do Identity, <c>Empresa</c>, a auditoria global e as
+    /// chaves de Data Protection (globais por natureza — valem para o processo, não para um tenant).
     /// </summary>
     private static readonly string[] SemFiltroEsperado =
     [
         "ApplicationRole",
         "ApplicationUser",
+        "DataProtectionKey",
         "Empresa",
         "IdentityRoleClaim`1",
         "IdentityUserClaim`1",

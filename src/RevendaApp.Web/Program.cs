@@ -5,6 +5,7 @@ using FluentValidation;
 using Mediator;
 
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Localization;
@@ -56,6 +57,15 @@ builder.Services.AddDbContext<AppDbContext>((serviceProvider, options) =>
     options.AddInterceptors(serviceProvider.GetRequiredService<SetEmpresaIdInterceptor>());
 });
 builder.EnrichNpgsqlDbContext<AppDbContext>();
+
+// Chaves de Data Protection no banco (e não no filesystem efêmero do container): sem isto cada
+// restart gera chaves novas e invalida todos os cookies de autenticação e tokens antiforgery já
+// emitidos (todo mundo é deslogado); com mais de uma réplica, cada instância teria chaves
+// diferentes e a sessão quebraria ao trocar de instância. A tabela é criada pela migração
+// DataProtectionKeys, aplicada no MigrateAsync() do bootstrap — as chaves só são lidas/gravadas no
+// primeiro uso (emissão de cookie), que acontece depois disso.
+builder.Services.AddDataProtection()
+    .PersistKeysToDbContext<AppDbContext>();
 
 builder.Services
     .AddIdentity<ApplicationUser, ApplicationRole>(options =>
