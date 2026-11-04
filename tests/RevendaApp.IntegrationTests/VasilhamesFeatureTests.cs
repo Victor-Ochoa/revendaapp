@@ -189,8 +189,12 @@ public class VasilhamesFeatureTests(DatabaseFixture fixture) : IClassFixture<Dat
     {
         using var db = fixture.CreateDbContext();
         var produtoId = await CriarProdutoComVasilhameAsync(db, estoque: 20);
-        await db.Produtos.Where(p => p.Id == produtoId).ExecuteUpdateAsync(s => s
-            .SetProperty(p => p.QuantidadeVasilhames, 10));
+
+        // Ajusta os vazios pela API do domínio (entidade rastreada): um ExecuteUpdate aqui alteraria
+        // a linha por fora do change tracker e o `xmin` da entidade ficaria defasado, fazendo a
+        // venda seguinte falhar com conflito de concorrência legítimo.
+        var produtoPreparo = await db.Produtos.FindAsync([produtoId]);
+        produtoPreparo!.AjustarVasilhames(10);
         await db.SaveChangesAsync();
 
         // Maria pega 3 em empréstimo; João pega 2 (clientes abertos distintos).

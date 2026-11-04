@@ -13,6 +13,15 @@ namespace RevendaApp.Web.Features.Clientes.Pagar;
 public sealed class RegistrarPagamentoCommandHandler(AppDbContext db, ITenantContext tenant, VendasAtualizadasNotifier notifier)
     : ICommandHandler<RegistrarPagamentoCommand, RegistrarPagamentoResult>
 {
+    /// <summary>
+    /// Mensagem exibida quando outra operação alterou o mesmo produto/cliente entre a leitura e a
+    /// gravação (venda simultânea do último item, pagamento concorrente). Recarregar e repetir é a
+    /// ação correta do operador.
+    /// </summary>
+    public const string MensagemConflito =
+        "Os dados deste produto ou cliente foram alterados por outra operação enquanto você finalizava. "
+        + "Recarregue a tela e tente novamente.";
+
     public async ValueTask<RegistrarPagamentoResult> Handle(RegistrarPagamentoCommand command, CancellationToken cancellationToken)
     {
         // Exige empresa selecionada (cliente/vendas localizados pelo filtro global do tenant).
@@ -58,7 +67,17 @@ public sealed class RegistrarPagamentoCommandHandler(AppDbContext db, ITenantCon
             valorPago -= venda.ValorTotal;
         }
 
-        await db.SaveChangesAsync(cancellationToken);
+        // O token `xmin` do Cliente detecta pagamento concorrente sobre o mesmo saldo devedor: a
+        // segunda gravação é recusada em vez de sobrescrever o saldo já abatido pela primeira.
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            throw new InvalidOperationException(MensagemConflito);
+        }
+
         await notifier.NotificarVendaRegistrada();
 
         return new RegistrarPagamentoResult(pagamento.Id, cliente.SaldoDevedor);

@@ -29,5 +29,8 @@ public class ClienteConfiguration : IEntityTypeConfiguration<Cliente>
         // SaldoDevedor. Substitui o índice simples de EmpresaId — o composto cobre o prefixo.
         // Convive com o único (EmpresaId, Telefone), que serve outra consulta.
         builder.HasIndex(c => new { c.EmpresaId, c.SaldoDevedor });
+
+        // Mesma razão do Produto: SaldoDevedor é read-modify-write (venda fiado + pagamento).
+        builder.Property<uint>("xmin").IsRowVersion();
     }
 }

@@ -15,6 +15,15 @@ public sealed class RegistrarVendaCommandHandler(AppDbContext db, ITenantContext
     AuthenticationStateProvider? authStateProvider = null)
     : ICommandHandler<RegistrarVendaCommand, RegistrarVendaResult>
 {
+    /// <summary>
+    /// Mensagem exibida quando outra operação alterou o mesmo produto/cliente entre a leitura e a
+    /// gravação (venda simultânea do último item, pagamento concorrente). Recarregar e repetir é a
+    /// ação correta do operador.
+    /// </summary>
+    public const string MensagemConflito =
+        "Os dados deste produto ou cliente foram alterados por outra operação enquanto você finalizava. "
+        + "Recarregue a tela e tente novamente.";
+
     public async ValueTask<RegistrarVendaResult> Handle(RegistrarVendaCommand command, CancellationToken cancellationToken)
     {
         // Exige empresa selecionada. A guarda fica só aqui (entrada): o helper RegistrarAsync é
@@ -24,8 +33,19 @@ public sealed class RegistrarVendaCommandHandler(AppDbContext db, ITenantContext
         var (usuario, vendedorId) = await UsuarioAtual.ObterAsync(authStateProvider, db, cancellationToken);
         var resultado = await RegistrarAsync(db, command, vendedorId, usuario, cancellationToken);
 
-        // Persiste a venda (itens, movimentações, pagamento e histórico).
-        await db.SaveChangesAsync(cancellationToken);
+        // Persiste a venda (itens, movimentações, pagamento e histórico). O token `xmin` de
+        // Produto/Cliente detecta que outra operação gravou a mesma linha depois da nossa leitura —
+        // nesse caso a operação inteira é recusada em vez de gravar estoque/saldo inconsistentes.
+        // A execution strategy do Npgsql não reexecuta este erro (não é transitório): recarregar e
+        // repetir exige reconstruir o estado da operação, então o operador é orientado a refazer.
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            throw new InvalidOperationException(MensagemConflito);
+        }
 
         // Recalcula a recorrência de recompra dos produtos com aviso (após persistir: o motor
         // consulta o banco e só enxerga a venda recém-criada depois do save acima).
