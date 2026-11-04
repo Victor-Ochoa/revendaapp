@@ -332,6 +332,13 @@ else
         {
             _errorMessage = string.Join(" ", ex.Errors.Select(e => e.ErrorMessage));
         }
+        catch (InvalidOperationException ex)
+        {
+            // Conflito de concorrência (Cliente tem token `xmin`): outra operação alterou o mesmo
+            // cliente entre a leitura e a gravação. Mostra a orientação de recarregar e tentar
+            // novamente em vez de derrubar o circuito.
+            _errorMessage = ex.Message;
+        }
         finally
         {
             _salvando = false;
