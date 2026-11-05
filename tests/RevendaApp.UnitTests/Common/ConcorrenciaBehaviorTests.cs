@@ -1,10 +1,14 @@
+using Mediator;
+
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 using RevendaApp.Domain.Entities;
 using RevendaApp.Domain.Enums;
 using RevendaApp.UnitTests.TestHelpers;
 using RevendaApp.Web.Common;
 using RevendaApp.Web.Common.Behaviors;
+using RevendaApp.Web.Features.Clientes.Pagar;
 
 namespace RevendaApp.UnitTests.Common;
 
@@ -61,6 +65,40 @@ public class ConcorrenciaBehaviorTests
 
         Assert.Equal(7, resultado);
         Assert.NotEmpty(db.ChangeTracker.Entries());
+    }
+
+    /// <summary>
+    /// Pina a <b>ordem</b> do pipeline resolvida pelo DI, que os testes acima não cobrem: eles
+    /// constroem o behavior à mão. O Mediator monta o encadeamento a partir de
+    /// <c>IEnumerable&lt;IPipelineBehavior&lt;,&gt;&gt;</c> <b>invertendo</b> a lista
+    /// (<c>pipelineBehaviours.Reverse()</c> no código gerado), então o <b>primeiro</b> registrado é o
+    /// <b>mais externo</b>. Se alguém reordenar ou remover o registro do <c>ConcorrenciaBehavior</c>,
+    /// o bug de gravação fantasma do change tracker volta sem nenhum outro teste ficar vermelho.
+    /// </summary>
+    [Fact]
+    public void Registro_NoDi_DeveColocarConcorrenciaBehaviorPorForaDaValidacao()
+    {
+        var servicos = new ServiceCollection();
+
+        // Mesmo par de registros de Program.cs (a ordem é o contrato; não inverter).
+        servicos.AddScoped(typeof(IPipelineBehavior<,>), typeof(ConcorrenciaBehavior<,>));
+        servicos.AddScoped(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+
+        // O ConcorrenciaBehavior recebe o AppDbContext scoped do circuito.
+        using var db = InMemoryDbContextFactory.Create(TenantTeste.EmpresaId);
+        servicos.AddScoped(_ => db);
+
+        using var provider = servicos.BuildServiceProvider();
+        using var escopo = provider.CreateScope();
+
+        var pipeline = escopo.ServiceProvider
+            .GetServices<IPipelineBehavior<RegistrarPagamentoCommand, RegistrarPagamentoResult>>()
+            .ToArray();
+
+        Assert.Collection(
+            pipeline,
+            externo => Assert.IsType<ConcorrenciaBehavior<RegistrarPagamentoCommand, RegistrarPagamentoResult>>(externo),
+            interno => Assert.IsType<ValidationBehavior<RegistrarPagamentoCommand, RegistrarPagamentoResult>>(interno));
     }
 
     /// <summary>

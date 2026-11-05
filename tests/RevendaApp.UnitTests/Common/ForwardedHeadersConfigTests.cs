@@ -82,15 +82,36 @@ public class ForwardedHeadersConfigTests
     [InlineData("010.0.0.0/8")] // octal → 8.0.0.0/8, faixa PÚBLICA
     [InlineData("10/8")]        // abreviado → 0.0.0.10/8, amplia a confiança
     [InlineData("0.0.0.0/0")]   // confiança universal
+    [InlineData("172.17.0.1/8")] // host bits → 172.0.0.0/8, faixa PÚBLICA
+    [InlineData("10.1.2.3/8")]   // host bits → 10.0.0.0/8, confiança 256x maior
     public void Configurar_recusa_cidr_malformado_em_vez_de_ampliar_a_confianca(string cidr)
     {
         var opcoes = new ForwardedHeadersOptions();
 
         // IPAddress.TryParse é leniente: "10" vira 0.0.0.10 e "010.0.0.0" é lido como octal
         // (8.0.0.0, faixa PÚBLICA). Aceitar isso transformaria um erro de digitação em confiança
-        // silenciosamente maior — o contrato da classe é falhar alto.
+        // silenciosamente maior — o contrato da classe é falhar alto. O mesmo vale para bits de
+        // host: System.Net.IPNetwork trunca "172.17.0.1/8" para 172.0.0.0/8 sem avisar, e o
+        // operador que copia o IP do proxy do deploy/README.md erra a máscara com facilidade.
         Assert.Throws<InvalidOperationException>(
             () => ForwardedHeadersConfig.Configurar(opcoes, cidr));
+    }
+
+    /// <summary>
+    /// Controle positivo do caso acima: o CIDR na forma canônica (endereço já é o endereço de
+    /// rede) continua aceito — a rejeição de bits de host não pode quebrar a configuração normal.
+    /// </summary>
+    [Theory]
+    [InlineData("172.16.0.0/12")]
+    [InlineData("10.1.0.0/16")]
+    [InlineData("192.168.0.0/16")]
+    public void Configurar_aceita_cidr_na_forma_canonica(string cidr)
+    {
+        var opcoes = new ForwardedHeadersOptions();
+
+        ForwardedHeadersConfig.Configurar(opcoes, cidr);
+
+        Assert.Contains(opcoes.KnownIPNetworks, rede => rede.ToString() == cidr);
     }
 
     private static bool EhConfiavel(ForwardedHeadersOptions opcoes, IPAddress ip) =>

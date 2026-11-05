@@ -275,8 +275,8 @@ using (var scope = app.Services.CreateScope())
 // Configure the HTTP request pipeline.
 // Em produção o Caddy (host) termina o TLS e faz reverse_proxy para a porta publicada do
 // container — o Kestrel enxerga o gateway do Docker, não loopback. Precisa vir ANTES do
-// UseHttpsRedirection: o redirect só acerta o destino se o esquema já estiver corrigido, e é o
-// esquema https que faz o cookie de autenticação sair como Secure.
+// UseHttpsRedirection: o redirect só acerta o destino se o esquema já estiver corrigido. (O
+// cookie de autenticação não depende disso: fora de Development o SecurePolicy é Always.)
 var opcoesProxy = new ForwardedHeadersOptions();
 ForwardedHeadersConfig.Configurar(opcoesProxy, app.Configuration[ForwardedHeadersConfig.ChaveRedesConfiaveis]);
 app.UseForwardedHeaders(opcoesProxy);

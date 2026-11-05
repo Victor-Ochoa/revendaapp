@@ -56,6 +56,8 @@ public sealed class RegistrarPagamentoCommandHandler(AppDbContext db, ITenantCon
             // parcial que não fecha a dívida antiga "pulava" para a próxima venda e a marcava
             // FiadoQuitado — reconhecendo lucro de uma venda ainda não paga no dashboard, além de
             // deixar a venda mais antiga em aberto com a mais nova quitada.
+            // Lacuna conhecida: a alocação é tudo-ou-nada por venda, então um pagamento que não
+            // cobre o total de uma venda nunca a marca como quitada (não há rateio parcial).
             if (valorPago < venda.ValorTotal)
             {
                 break;

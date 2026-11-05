@@ -12,7 +12,9 @@ namespace RevendaApp.Web.Common;
 /// <b>Por que loopback + redes privadas:</b> em produção o Caddy roda no host e faz
 /// <c>reverse_proxy</c> para a porta <b>publicada</b> do container. Nesse caminho o Kestrel enxerga o
 /// gateway da bridge do Docker (172.16.0.0/12), <b>não</b> o loopback — confiar apenas em loopback
-/// deixaria o esquema real (<c>https</c>) invisível e o cookie <c>Secure</c> nunca seria emitido.
+/// deixaria o app achando que o esquema é <c>http</c>: o <c>UseHttpsRedirection</c>, as URLs
+/// absolutas e redirects gerados sairiam com o esquema errado e o HSTS não seria aplicado. (O
+/// cookie <c>Secure</c> não depende disso: fora de Development o <c>SecurePolicy</c> é <c>Always</c>.)
 /// Por isso confiamos nas faixas RFC1918 (loopback, 10/8, 172.16/12, 192.168/16), que só existem
 /// dentro da infraestrutura do host/Docker. Um cliente externo que enviasse
 /// <c>X-Forwarded-Proto: https</c> direto ao Kestrel continua sendo ignorado.
@@ -101,6 +103,19 @@ public static class ForwardedHeadersConfig
                 $"CIDR inválido em {ChaveRedesConfiaveis}: '{cidr}'. Use o formato endereço/prefixo (ex.: 172.16.0.0/12).");
         }
 
-        return new System.Net.IPNetwork(endereco, prefixo);
+        var rede = new System.Net.IPNetwork(endereco, prefixo);
+
+        // `System.Net.IPNetwork` TRUNCA os bits de host em silêncio: 172.17.0.1/8 vira 172.0.0.0/8
+        // (faixa PÚBLICA) — exatamente o que um operador digita ao copiar o IP do proxy e errar a
+        // máscara. Exigir que o endereço seja o da rede mantém a promessa de falhar alto em vez de
+        // alargar a confiança.
+        if (!rede.BaseAddress.Equals(endereco))
+        {
+            throw new InvalidOperationException(
+                $"CIDR inválido em {ChaveRedesConfiaveis}: '{cidr}' tem bits de host setados; "
+                + $"use o endereço de rede '{rede}'.");
+        }
+
+        return rede;
     }
 }
