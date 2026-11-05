@@ -25,5 +25,10 @@ public class ProdutoConfiguration : IEntityTypeConfiguration<Produto>
         builder.Property(p => p.Ativo).HasDefaultValue(true);
 
         builder.Ignore(p => p.EstoqueBaixo);
+
+        // Concorrência otimista: o estoque é lido, validado em memória e gravado. Sem o token, duas
+        // vendas simultâneas do último item passam as duas e o estoque fica negativo. `xmin` é a coluna
+        // de sistema do Postgres com o id da última transação que alterou a linha.
+        builder.Property<uint>("xmin").IsRowVersion();
     }
 }

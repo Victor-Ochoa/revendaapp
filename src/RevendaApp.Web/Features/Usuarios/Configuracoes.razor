@@ -21,6 +21,10 @@
 <MudText Typo="Typo.h4" Class="mb-4">Configurações</MudText>
 
 <MudTabs Class="mb-4">
+    <MudTabPanel Text="Minha Empresa">
+        <ConfigEmpresaTab />
+    </MudTabPanel>
+
     <MudTabPanel Text="Usuários">
         <div class="d-flex align-center mb-4">
             <MudSpacer />
@@ -123,13 +127,6 @@
                 </RowTemplate>
             </MudTable>
         }
-    </MudTabPanel>
-
-    @* "Minha Empresa" fica por ÚLTIMO de propósito: é uma configuração feita uma vez, enquanto
-       Usuários e Vendas são as abas de uso diário. Colocá-la no fim preserva o índice das abas
-       existentes (nada muda para quem já usa a tela) e mantém o formulário longo fora do caminho. *@
-    <MudTabPanel Text="Minha Empresa">
-        <ConfigEmpresaTab />
     </MudTabPanel>
 </MudTabs>
 

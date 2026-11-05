@@ -5,6 +5,11 @@ fiado/saldo devedor), estoque, vendas e dashboards gerenciais. O primeiro client
 revendedora de gás de cozinha e água mineral — o domínio de vendas, fiado e vasilhames foi
 modelado a partir dela.
 
+Além do fluxo básico de venda, o app cobre **controle de vasilhames** (cheios, vazios disponíveis e
+emprestados, com troca × empréstimo na venda), **aviso de recompra** aprendido por cliente/produto
+e **edição/exclusão de vendas** com estorno (aba Vendas em `/configuracoes`, restrita a
+administradores). Ver "Funcionalidades além do fluxo básico" no [AGENTS.md](AGENTS.md).
+
 Cada empresa (tenant) tem nome, cor e logo próprios e enxerga **apenas** os seus dados. A
 marca do produto (Revenda.App) aparece no login e no modo central, onde o super administrador
 gerencia as empresas.
@@ -102,10 +107,16 @@ A senha do usuário `postgres` é **fixa** no AppHost (`postgres-password`, valo
 `revendaapp-dev-only`) justamente por causa desse volume — **não remova** essa senha fixa, senão o
 Aspire gera uma senha nova a cada execução e o volume antigo passa a recusar a autenticação.
 
+## Deploy
+O deploy em produção (`deploy/README.md`) usa `aspire deploy -e Production` para uma VM com Caddy
+na frente (TLS). Há também o workflow `.github/workflows/deploy.yml`.
+
 ## Testes
 ```bash
 dotnet test
 ```
+
+Formatação (mesmo check do CI): `dotnet format RevendaApp.slnx --no-restore --verify-no-changes`.
 
 A suíte de integração (`tests/RevendaApp.IntegrationTests`) sobe um **Postgres real via Aspire**
 (nada de mocks de banco) e roda **serializada**: o `AssemblyInfo.cs` declara

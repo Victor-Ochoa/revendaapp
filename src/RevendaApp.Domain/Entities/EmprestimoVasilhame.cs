@@ -71,7 +71,13 @@ public class EmprestimoVasilhame
     /// <see cref="QuantidadeDevolvida"/> e reduzem <see cref="Saldo"/>, sem marcar quitação;
     /// a devolução que quita integralmente o empréstimo define <see cref="DevolvidoEm"/>.
     /// </summary>
-    public void RegistrarDevolucao(int quantidade)
+    /// <param name="quantidade">Quantidade de vasilhames devolvidos nesta operação.</param>
+    /// <param name="agora">
+    /// Instante da devolução, gravado apenas quando o empréstimo é quitado integralmente. O handler
+    /// passa o <c>TimeProvider</c> para manter a auditoria coerente e testável; omitido, usa
+    /// <see cref="DateTime.UtcNow"/>.
+    /// </param>
+    public void RegistrarDevolucao(int quantidade, DateTime? agora = null)
     {
         if (quantidade <= 0)
         {
@@ -87,7 +93,7 @@ public class EmprestimoVasilhame
 
         if (QuantidadeDevolvida == Quantidade)
         {
-            DevolvidoEm = DateTime.UtcNow;
+            DevolvidoEm = agora ?? DateTime.UtcNow;
         }
     }
 }

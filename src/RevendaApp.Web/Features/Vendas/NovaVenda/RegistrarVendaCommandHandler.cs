@@ -15,6 +15,13 @@ public sealed class RegistrarVendaCommandHandler(AppDbContext db, ITenantContext
     AuthenticationStateProvider? authStateProvider = null)
     : ICommandHandler<RegistrarVendaCommand, RegistrarVendaResult>
 {
+    /// <summary>
+    /// Mensagem exibida quando outra operação alterou o mesmo produto/cliente entre a leitura e a
+    /// gravação (venda simultânea do último item, pagamento concorrente). A tradução da exceção é
+    /// feita pelo <c>ConcorrenciaBehavior</c>; esta constante apenas expõe o texto compartilhado.
+    /// </summary>
+    public const string MensagemConflito = Concorrencia.Mensagem;
+
     public async ValueTask<RegistrarVendaResult> Handle(RegistrarVendaCommand command, CancellationToken cancellationToken)
     {
         // Exige empresa selecionada. A guarda fica só aqui (entrada): o helper RegistrarAsync é
@@ -24,7 +31,9 @@ public sealed class RegistrarVendaCommandHandler(AppDbContext db, ITenantContext
         var (usuario, vendedorId) = await UsuarioAtual.ObterAsync(authStateProvider, db, cancellationToken);
         var resultado = await RegistrarAsync(db, command, vendedorId, usuario, cancellationToken);
 
-        // Persiste a venda (itens, movimentações, pagamento e histórico).
+        // Persiste a venda (itens, movimentações, pagamento e histórico). O token `xmin` de
+        // Produto/Cliente detecta que outra operação gravou a mesma linha depois da nossa leitura;
+        // o `ConcorrenciaBehavior` traduz o conflito e limpa o change tracker.
         await db.SaveChangesAsync(cancellationToken);
 
         // Recalcula a recorrência de recompra dos produtos com aviso (após persistir: o motor

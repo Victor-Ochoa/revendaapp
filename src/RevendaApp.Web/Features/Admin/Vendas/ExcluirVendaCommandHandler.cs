@@ -13,6 +13,7 @@ namespace RevendaApp.Web.Features.Admin.Vendas;
 public sealed class ExcluirVendaCommandHandler(
     AppDbContext db,
     ITenantContext tenant,
+    TimeProvider timeProvider,
     IUsuarioAutenticado? usuarioAutenticado = null,
     VendasAtualizadasNotifier? notifier = null)
     : ICommandHandler<ExcluirVendaCommand, ExcluirVendaResult>
@@ -54,7 +55,7 @@ public sealed class ExcluirVendaCommandHandler(
         await ReversaoVendaHelper.ReverterAsync(db, venda, cancellationToken);
 
         // Exclusão lógica: a venda permanece no banco (não quebrar FKs) mas deixa de contar.
-        venda.Excluir();
+        venda.Excluir(timeProvider.GetUtcNow().UtcDateTime);
 
         await db.SaveChangesAsync(cancellationToken);
 

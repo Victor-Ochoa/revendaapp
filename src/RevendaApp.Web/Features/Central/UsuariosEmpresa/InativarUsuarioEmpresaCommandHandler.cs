@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
 
 using RevendaApp.Domain.Entities;
 using RevendaApp.Infrastructure;
@@ -45,11 +46,12 @@ namespace RevendaApp.Web.Features.Central.UsuariosEmpresa;
 /// bloqueio de login já é do <c>LoginCommandHandler</c>.
 /// </para>
 /// </remarks>
-public sealed class InativarUsuarioEmpresaCommandHandler(
+public sealed partial class InativarUsuarioEmpresaCommandHandler(
     AppDbContext db,
     ITenantContext tenant,
     UserManager<ApplicationUser> userManager,
-    AuthenticationStateProvider? authStateProvider = null)
+    AuthenticationStateProvider? authStateProvider = null,
+    ILogger<InativarUsuarioEmpresaCommandHandler>? logger = null)
     : ICommandHandler<InativarUsuarioEmpresaCommand, InativarUsuarioEmpresaResult>
 {
     /// <summary>
@@ -98,11 +100,29 @@ public sealed class InativarUsuarioEmpresaCommandHandler(
 
                 if (!atualizacaoStamp.Succeeded)
                 {
+                    // O Identity recusou a renovação (sem exceção): a trilha de log diz quais erros
+                    // foram esses — sem ela o suporte só tem a mensagem genérica do operador.
+                    if (logger is not null)
+                    {
+                        LogRenovacaoStampRecusada(
+                            logger,
+                            command.UsuarioId,
+                            command.EmpresaId,
+                            string.Join("; ", atualizacaoStamp.Errors.Select(erro => erro.Description)));
+                    }
+
                     return InativarUsuarioEmpresaResult.Falha(MensagemSessaoNaoRevogada);
                 }
             }
             catch (Exception excecao) when (excecao is not OperationCanceledException)
             {
+                // A inativação JÁ está commitada; falhar aqui não a desfaz. O log é a única trilha
+                // de por que a sessão do usuário continua viva.
+                if (logger is not null)
+                {
+                    LogFalhaAoRenovarStamp(logger, excecao, command.UsuarioId, command.EmpresaId);
+                }
+
                 return InativarUsuarioEmpresaResult.Falha(MensagemSessaoNaoRevogada);
             }
         }
@@ -193,4 +213,28 @@ public sealed class InativarUsuarioEmpresaCommandHandler(
 
         return !outrosAdminsAtivos;
     }
+
+    /// <summary>
+    /// Trilha de diagnóstico da revogação de sessão. Fica fora do <c>Handle</c> porque o
+    /// <c>LoggerMessage</c> gerado é o caminho recomendado pelo analisador (CA1848): evita boxing e
+    /// formatação quando o nível não está habilitado.
+    /// </summary>
+    [LoggerMessage(
+        Level = LogLevel.Error,
+        Message = "Identity recusou a renovação do SecurityStamp do usuário {UsuarioId} da empresa {EmpresaId}: {Erros}")]
+    private static partial void LogRenovacaoStampRecusada(
+        ILogger logger,
+        Guid usuarioId,
+        Guid empresaId,
+        string erros);
+
+    /// <summary>Mesma trilha, para a exceção que escapa do <c>UpdateSecurityStampAsync</c>.</summary>
+    [LoggerMessage(
+        Level = LogLevel.Error,
+        Message = "Falha ao renovar o SecurityStamp do usuário {UsuarioId} da empresa {EmpresaId} após inativação.")]
+    private static partial void LogFalhaAoRenovarStamp(
+        ILogger logger,
+        Exception excecao,
+        Guid usuarioId,
+        Guid empresaId);
 }

@@ -3,7 +3,9 @@
 Deploy para uma **VM Ubuntu da MagaluCloud**, replicando o padrão do projeto CapZeroApp:
 [aspire-ssh-deploy](https://github.com/davidfowl/aspire-ssh-deploy) gera o `docker-compose.yaml`,
 faz push das imagens para o container registry da Magalu e roda `docker compose up -d` na VM via SSH.
-O **Caddy** no host faz terminação TLS com **certificado auto-assinado** para o IP público.
+O **Caddy** no host faz terminação TLS com **certificado Let's Encrypt** para o hostname
+`revenda.app.<IP>.sslip.io` (ver [Caddyfile](Caddyfile)) — HTTPS válido, sem aviso do navegador.
+O certificado auto-assinado descrito mais abaixo é o caminho alternativo (apenas IP).
 
 ## VM alvo (confirmada)
 - IP público: `201.23.87.110` · usuário `ubuntu` · região `br-se1-a` · Ubuntu 24.04 LTS
@@ -24,11 +26,9 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker ubuntu   # re-login (exit e ssh de novo) p/ aplicar
 
 # 2. Caddy (terminação TLS)
+#    O Caddyfile versionado usa o hostname sslip.io e emite certificado Let's Encrypt
+#    automático (ACME HTTP-01 pela porta 80) — não precisa gerar certificado na mão.
 sudo apt install -y caddy
-sudo mkdir -p /etc/caddy/certs
-sudo openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-  -keyout /etc/caddy/certs/server.key -out /etc/caddy/certs/server.crt \
-  -subj "/CN=201.23.87.110"
 sudo cp deploy/Caddyfile /etc/caddy/Caddyfile    # da máquina de dev, ou cole o conteúdo
 sudo systemctl enable --now caddy
 
@@ -60,9 +60,21 @@ dotnet run --project src/RevendaApp.AppHost -- deploy
 #   - copia compose+.env via SSH e roda `docker compose up -d` na VM
 ```
 
-O app fica acessível em **`https://201.23.87.110`** (cert auto-assinado — o navegador avisará
-"não seguro"; aceite/avançar). Login com o email/senha de `Parameters:seed-admin-email/-password`.
-Dashboard Aspire (se habilitado via `.WithDashboard`): porta 8085.
+O app fica acessível em **`https://revenda.app.201.23.87.110.sslip.io`** (certificado Let's
+Encrypt válido). Login com o email/senha de `Parameters:seed-admin-email/-password`.
+
+> O `deploy.yml` do GitHub Actions roda `aspire deploy -e Production` **depois** que o workflow `CI`
+> conclui com sucesso na `main` (`on.workflow_run`), então um build reprovado nunca vai para
+> produção. Três detalhes desse gatilho que não são óbvios:
+> - `workflow_run` dispara também em falha, por isso o job tem a guarda
+>   `conclusion == 'success' && event == 'push'`;
+> - o workflow roda a versão que está na default branch, não a do commit que disparou o CI;
+> - `github.sha` nesse evento é o **último commit da default branch**, não o commit testado. O
+>   checkout usa `workflow_run.head_sha` e o `SHORT_SHA` sai de `git rev-parse --short HEAD`, para a
+>   tag da imagem corresponder ao código publicado.
+>
+> Deploy manual continua por `workflow_dispatch` (o payload não traz `workflow_run`, e a guarda
+> libera o job).
 
 ---
 
@@ -71,8 +83,31 @@ Dashboard Aspire (se habilitado via `.WithDashboard`): porta 8085.
 |---|---|---|
 | Postgres | Container (Docker Compose) | imagem gerada, volume persistente (`revendaapp-postgres-data`) |
 | Revenda.App Web | Container | `localhost:8080` HTTP, exposto `8080:8080` e `8443:8080` |
-| Caddy | Host (systemd) | `:443` TLS (cert auto-assinado) → `localhost:8080`; `:80` redireciona p/ `https://IP` |
+| Caddy | Host (systemd) | `:443` TLS (Let's Encrypt via sslip.io) → `localhost:8080`; `:80` usado pelo ACME |
 | Registry | Magalu Container Registry | `container-registry.br-se1.magalu.cloud/revendaapp` |
+
+## Sessões e proxy (hardening)
+
+- **Chaves de Data Protection no Postgres.** As chaves ficam na tabela `DataProtectionKeys` do banco
+  (`PersistKeysToDbContext`), não no filesystem efêmero do container. Reiniciar o container **não**
+  desloga os usuários, e duas réplicas compartilham as mesmas chaves — a autenticação (cookie e
+  tokens antiforgery) sobrevive à troca de instância. O circuito Blazor em si, por ser em memória,
+  **não** sobrevive: o usuário cai na tela de reconexão, mas segue autenticado. Não troque isso por
+  persistência em arquivo: cada restart geraria chaves novas e invalidaria todos os cookies de
+  autenticação e tokens antiforgery já emitidos.
+- **`X-Forwarded-*` confiável só de loopback + RFC1918.** O Caddy no host faz `reverse_proxy` para a
+  porta publicada do container, então o Kestrel enxerga o gateway da bridge do Docker. Sem esse
+  processamento o app acha que o esquema é `http`: o `UseHttpsRedirection`, as URLs absolutas e
+  redirects gerados saem com o esquema errado e o HSTS não é aplicado. O cookie de sessão não é
+  afetado — fora de Development o `SecurePolicy` é `Always`, independente do proxy. A lista de redes
+  é ajustável em `Proxy:RedesConfiaveis` (CIDRs separados por vírgula); um CIDR malformado
+  **derruba o startup** de propósito.
+- **Recomendado: publique as portas do container só em loopback.** Use `127.0.0.1:8080:8080` e
+  `127.0.0.1:8443:8080` no lugar de `8080:8080` e `8443:8080` — o raciocínio vale para **qualquer**
+  porta publicada que chegue ao listener HTTP do container, não só a 8080. Hoje elas são alcançáveis
+  pela NIC privada da VM: um par na mesma rede poderia falar direto com o Kestrel e forjar
+  `X-Forwarded-Proto` (e, com isso, o esquema das URLs e do redirect). Publicando em loopback só o
+  Caddy do host chega ao app.
 
 ## Atualizar secret do admin depois de criado
 O seed do admin é idempotente (`FindByEmailAsync`). Se o `seed-admin-password` mudar após o

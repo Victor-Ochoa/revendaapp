@@ -15,7 +15,10 @@ public class PagamentoConfiguration : IEntityTypeConfiguration<Pagamento>
         builder.Property(p => p.Id).ValueGeneratedNever();
 
         builder.Property(p => p.EmpresaId).IsRequired();
-        builder.HasIndex(p => p.EmpresaId);
+
+        // Índice de tenant + histórico de pagamentos/dashboard: filtra por empresa e ordena por
+        // Data. Substitui o índice simples de EmpresaId — o composto cobre o prefixo.
+        builder.HasIndex(p => new { p.EmpresaId, p.Data });
 
         builder.Property(p => p.Valor).HasPrecision(18, 2);
         builder.Property(p => p.Observacao).HasMaxLength(500);

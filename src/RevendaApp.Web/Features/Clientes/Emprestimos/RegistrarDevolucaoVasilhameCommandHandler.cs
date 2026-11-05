@@ -13,13 +13,18 @@ using RevendaApp.Web.Common.Authorization;
 namespace RevendaApp.Web.Features.Clientes.Emprestimos;
 
 public sealed class RegistrarDevolucaoVasilhameCommandHandler(AppDbContext db, ITenantContext tenant,
-    AuthenticationStateProvider? authStateProvider = null, IUsuarioAutenticado? usuarioAutenticado = null)
+    TimeProvider timeProvider, AuthenticationStateProvider? authStateProvider = null,
+    IUsuarioAutenticado? usuarioAutenticado = null)
     : ICommandHandler<RegistrarDevolucaoVasilhameCommand, bool>
 {
     public async ValueTask<bool> Handle(RegistrarDevolucaoVasilhameCommand command, CancellationToken cancellationToken)
     {
         // Exige empresa selecionada (produto/cliente localizados pelo filtro global do tenant).
         _ = tenant.EmpresaIdRequerida("registrar devolução de vasilhame");
+
+        // Instante único da operação: garante que todos os empréstimos quitados nesta devolução
+        // registrem exatamente o mesmo momento de auditoria.
+        var agora = timeProvider.GetUtcNow().UtcDateTime;
 
         // Operação restrita a administradores (mesmo padrão dos handlers de mutação de estoque).
         if (usuarioAutenticado is not null)
@@ -64,7 +69,7 @@ public sealed class RegistrarDevolucaoVasilhameCommandHandler(AppDbContext db, I
             }
 
             var aQuitar = Math.Min(restante, emprestimo.Saldo);
-            emprestimo.RegistrarDevolucao(aQuitar);
+            emprestimo.RegistrarDevolucao(aQuitar, agora);
             restante -= aQuitar;
         }
 

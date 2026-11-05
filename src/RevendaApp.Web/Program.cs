@@ -5,6 +5,8 @@ using FluentValidation;
 using Mediator;
 
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Localization;
 using Microsoft.EntityFrameworkCore;
@@ -56,6 +58,15 @@ builder.Services.AddDbContext<AppDbContext>((serviceProvider, options) =>
 });
 builder.EnrichNpgsqlDbContext<AppDbContext>();
 
+// Chaves de Data Protection no banco (e não no filesystem efêmero do container): sem isto cada
+// restart gera chaves novas e invalida todos os cookies de autenticação e tokens antiforgery já
+// emitidos (todo mundo é deslogado); com mais de uma réplica, cada instância teria chaves
+// diferentes e a sessão quebraria ao trocar de instância. A tabela é criada pela migração
+// DataProtectionKeys, aplicada no MigrateAsync() do bootstrap — as chaves só são lidas/gravadas no
+// primeiro uso (emissão de cookie), que acontece depois disso.
+builder.Services.AddDataProtection()
+    .PersistKeysToDbContext<AppDbContext>();
+
 builder.Services
     .AddIdentity<ApplicationUser, ApplicationRole>(options =>
     {
@@ -102,6 +113,14 @@ builder.Services.ConfigureApplicationCookie(cookie =>
     // de "Sem Autorização" (em vez do comportamento padrão de 403/redirect ao login).
     cookie.AccessDeniedPath = "/sem-autorizacao";
 
+    // Em produção o TLS termina no Caddy e o app só vê HTTP. Como passamos a aceitar
+    // X-Forwarded-Proto do proxy, o cookie precisa ser SEMPRE Secure fora de Development —
+    // senão um X-Forwarded-Proto forjado conseguiria rebaixar o cookie de sessão para texto puro.
+    // Em Development mantemos SameAsRequest para o http://localhost continuar funcionando.
+    cookie.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
+        ? CookieSecurePolicy.SameAsRequest
+        : CookieSecurePolicy.Always;
+
     // Teto ABSOLUTO da sessão de impersonation ("Entrar como"): 8h contadas do início, validadas a
     // cada request pelo claim ImpersonacaoIniciadaEm. Sem isto o cookie sliding + o
     // SecurityStampValidator renovam o ticket para sempre e o "teto de 8h" prometido pelo
@@ -146,6 +165,11 @@ builder.Services.AddScoped<IPrincipalDoUsuario, PrincipalDoUsuario>();
 builder.Services.AddScoped<IUsuarioWriter, IdentityUsuarioWriter>();
 builder.Services.AddScoped<VendasAtualizadasNotifier>();
 
+// Portão único do AppDbContext scoped do circuito: o EF proíbe duas operações simultâneas no mesmo
+// contexto, e componentes diferentes consultam no próprio OnInitializedAsync (página + aba ativa).
+// Serializar no pipeline do Mediator cobre validação, handler e os Send que o handler dispara.
+builder.Services.AddScoped<SemaforoDoCircuito>();
+
 // Identidade exibida na interface (nome/cor/logo da empresa; "Revenda.App" no modo central). Scoped
 // porque memoiza o logo da empresa — evita reler o base64 (~500KB) a cada render do app bar.
 builder.Services.AddScoped<IdentidadeEmpresaService>();
@@ -166,7 +190,12 @@ builder.Services.Configure<RequestLocalizationOptions>(options =>
 
 builder.Services.AddMediator(options => options.ServiceLifetime = ServiceLifetime.Scoped);
 builder.Services.AddValidatorsFromAssemblyContaining<Program>();
-builder.Services.AddScoped(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+// Ordem do pipeline (verificada empiricamente: o PRIMEIRO registrado é o MAIS EXTERNO). O
+// ConcorrenciaBehavior fica por fora da validação para envolver o pipeline inteiro — um conflito
+// de concorrência (que só ocorre no save do handler) é traduzido num único ponto, e a limpeza do
+// change tracker vale para qualquer handler que mute Produto/Cliente. O registro vive na extensão
+// para que o teste de DI pine a MESMA linha que a aplicação usa.
+builder.Services.AddPipelineBehaviors();
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
@@ -202,11 +231,20 @@ app.MapDefaultEndpoints();
 // desligado via "Seed:EnableDemoData": false (appsettings.Production.json).
 using (var scope = app.Services.CreateScope())
 {
+    // Sem trilha de log o bootstrap é uma caixa-preta: se a migração falhar ou o seed não rodar,
+    // o operador não tem como saber em que passo o processo parou.
+    var bootstrapLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+    LogsDoBootstrap.AplicandoMigracoes(bootstrapLogger);
+
     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await dbContext.Database.MigrateAsync();
 
     var credentialsRequired = app.Environment.IsProduction();
-    await SeedData.SeedDefaultAdminUserAsync(scope.ServiceProvider, app.Configuration, requireExplicitCredentials: credentialsRequired);
+    await SeedData.SeedDefaultAdminUserAsync(
+        scope.ServiceProvider,
+        app.Configuration,
+        requireExplicitCredentials: credentialsRequired,
+        logger: bootstrapLogger);
 
     if (app.Configuration.GetValue("Seed:EnableDemoData", !app.Environment.IsProduction()))
     {
@@ -235,9 +273,19 @@ using (var scope = app.Services.CreateScope())
             scope.ServiceProvider.GetRequiredService<RoleManager<ApplicationRole>>(),
             scope.ServiceProvider.GetRequiredService<TimeProvider>());
     }
+
+    LogsDoBootstrap.Concluido(bootstrapLogger);
 }
 
 // Configure the HTTP request pipeline.
+// Em produção o Caddy (host) termina o TLS e faz reverse_proxy para a porta publicada do
+// container — o Kestrel enxerga o gateway do Docker, não loopback. Precisa vir ANTES do
+// UseHttpsRedirection: o redirect só acerta o destino se o esquema já estiver corrigido. (O
+// cookie de autenticação não depende disso: fora de Development o SecurePolicy é Always.)
+var opcoesProxy = new ForwardedHeadersOptions();
+ForwardedHeadersConfig.Configurar(opcoesProxy, app.Configuration[ForwardedHeadersConfig.ChaveRedesConfiaveis]);
+app.UseForwardedHeaders(opcoesProxy);
+
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
@@ -263,3 +311,15 @@ app.MapAuthEndpoints();
 app.MapConfiguracaoEmpresaEndpoints();
 
 app.Run();
+
+// Logs do bootstrap no padrão LoggerMessage (CA1848): a mensagem só é formatada quando o nível
+// está habilitado. Ficam num tipo próprio porque métodos [LoggerMessage] precisam ser `partial`,
+// o que não é possível em statements de topo.
+internal static partial class LogsDoBootstrap
+{
+    [LoggerMessage(Level = LogLevel.Information, Message = "Aplicando migrações do banco...")]
+    public static partial void AplicandoMigracoes(ILogger logger);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Bootstrap concluído: migrações aplicadas e super admin verificado.")]
+    public static partial void Concluido(ILogger logger);
+}

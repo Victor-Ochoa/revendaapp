@@ -45,7 +45,9 @@ logo**, exibidos no app bar. Cores padrão do tema: **azul marinho e branco**.
   e registra o Identity via `AddIdentity<ApplicationUser, ApplicationRole>(...)` (com `UserManager`,
   `RoleManager` e `SignInManager`). `CookieAuthenticationOptions.LoginPath` é configurado para
   `/login` e `AccessDeniedPath` para `/sem-autorizacao` (página personalizada para usuário
-  autenticado sem a role exigida, via `AddIdentityCookies(o => o.ApplicationCookie.Configure(...))`).
+  autenticado sem a role exigida) via `ConfigureApplicationCookie(...)`. **Não** chame
+  `AddAuthentication().AddIdentityCookies()` de novo: o `AddIdentity` já registra o esquema
+  `Identity.Application` e a segunda chamada estoura `Scheme already exists` no startup.
   O bootstrap cria **apenas o super admin da central** — role `SuperAdmin`, `EmpresaId = null` (ver
   `Features/Auth/SeedData.cs`; credenciais via `SeedAdmin:Email`/`SeedAdmin:Password`, com defaults
   de desenvolvimento `admin@revenda.app.com.br`/`RevendaApp@123`; em Produção o seed **lança** se as
@@ -75,7 +77,8 @@ logo**, exibidos no app bar. Cores padrão do tema: **azul marinho e branco**.
   campo de formulário em página estática; componentes MudBlazor puramente apresentacionais
   (`MudPaper`, `MudText`, `MudAlert`, `MudButton` com `ButtonType.Submit`) funcionam normalmente.
   Páginas comuns (dashboards, listas, modais) devem declarar `@rendermode InteractiveServer`
-  (ver `Home.razor`) para poderem usar os componentes interativos do MudBlazor normalmente.
+  (ver `Features/Home/Dashboard.razor`) para poderem usar os componentes interativos do MudBlazor
+  normalmente.
 - **Central Package Management**: todas as versões de pacotes NuGet ficam em
   [Directory.Packages.props](/home/voch_silva/dev/opencode/revendaapp/Directory.Packages.props) na
   raiz. Os `.csproj` referenciam pacotes **sem** atributo `Version`.
@@ -109,10 +112,11 @@ Leia esta seção inteira antes de mexer em qualquer handler, entidade ou consul
   **10** entidades de domínio (`Cliente`, `Produto`, `Venda`, `ItemVenda`, `Pagamento`,
   `MovimentacaoEstoque`, `HistoricoEstoque`, `PrecoPersonalizadoCliente`, `EmprestimoVasilhame`,
   `RecorrenciaCompra`) e o `SetEmpresaIdInterceptor` carimba `EmpresaId` nas linhas `Added` que
-  ainda estejam com `Guid.Empty`. **Não** são filtradas: `Empresas`, as tabelas do Identity e
-  `RegistrosAuditoria` (global, ver auditoria abaixo). A lista é **travada** por
-  `tests/RevendaApp.UnitTests/Tenancy/FiltrosGlobaisTests.cs` — entidade nova com/sem filtro obriga a
-  atualizar o teste e a decisão consciente.
+  ainda estejam com `Guid.Empty`. **Não** são filtradas: `Empresas`, as tabelas do Identity,
+  `RegistrosAuditoria` (global, ver auditoria abaixo) e `DataProtectionKeys` (global por natureza:
+  as chaves de criptografia valem para o processo inteiro, não para um tenant). A lista é
+  **travada** por `tests/RevendaApp.UnitTests/Tenancy/FiltrosGlobaisTests.cs` — entidade nova
+  com/sem filtro obriga a atualizar o teste e a decisão consciente.
 - **Fail-closed.** `ITenantContext.EmpresaId` só devolve `null` (modo central = vê todas as
   empresas) em dois casos: (a) **não autenticado** (seed, SSR estático, design-time) ou (b)
   autenticado com a claim `EhSuperAdmin = true`. Um usuário **autenticado, não-super-admin e sem
@@ -170,7 +174,11 @@ Leia esta seção inteira antes de mexer em qualquer handler, entidade ou consul
 - **Novas telas.** `/central` (super admin): abas **Empresas** (criar, configurar, usuários, ver
   produtos, inativar/ativar, "Entrar como") e **Auditoria**. A aba **"Minha Empresa"** em
   `/configuracoes` deixa o admin da empresa editar nome/cor/logo do próprio cadastro
-  (`Features/ConfiguracaoEmpresa`).
+  (`Features/ConfiguracaoEmpresa`). Em `/configuracoes` a ordem das abas é **Minha Empresa**,
+  Usuários e Vendas — "Minha Empresa" é a **primeira** e a ordem é pinada por
+  `ConfiguracoesAbasTests`. A cor primária é escolhida num `MudColorPicker` (`ShowAlpha=false`, o
+  domínio não tem canal de alfa); a conversão para o hex do comando passa por `CorPrimaria` e o
+  teste garante que o valor enviado é aceito pelo validador real.
 
 ## Comandos comuns
 - **Rodar a aplicação local** (sobe Aspire + Postgres + Web, abre o Aspire Dashboard):
@@ -179,6 +187,8 @@ Leia esta seção inteira antes de mexer em qualquer handler, entidade ou consul
   (ou os defaults de desenvolvimento `admin@revenda.app.com.br`/`RevendaApp@123`) — **não** é admin de
   empresa. Empresas são criadas pela central (`/central`).
 - **Build**: `dotnet build`
+- **Formatação**: `dotnet format RevendaApp.slnx --no-restore --verify-no-changes` (é o passo
+  `Format check` do CI; rode antes de abrir MR).
 - **Testes**: `dotnet test` (unitários + integração). Rodar só unitários:
   `dotnet test tests/RevendaApp.UnitTests` (rápido, InMemory). Rodar um teste específico:
   `dotnet test --filter FullyQualifiedName~NovaVendaFeatureTests`.
@@ -189,7 +199,54 @@ Leia esta seção inteira antes de mexer em qualquer handler, entidade ou consul
   sob o tenant dessa empresa, dados de demonstração (clientes, produtos, vendas cobrindo todas as
   formas de pagamento, pagamentos e movimentações de estoque com datas anteriores a hoje) se ainda
   não houver produtos na empresa demo.
-- **Migrations EF**: ver seção acima (exige `dotnet-ef`).
+- **Migrations EF**: ver seção acima (exige `dotnet-ef`). O hardening de produção acrescentou as
+  migrações `DataProtectionKeys`, `IndicesDashboard` e `ConcorrenciaXmin`. A `ConcorrenciaXmin`
+  contém chamadas `AddColumn`/`DropColumn` no `Up`/`Down`, mas o SQL emitido é **vazio** — o Npgsql
+  filtra operações em colunas de sistema (`xmin` é uma coluna de sistema do Postgres). Não tente
+  "consertar" essa migração: as chamadas existem só para o snapshot do EF reconhecer o token.
+
+## Funcionalidades além do fluxo básico
+
+- **Vasilhames** (`Features/Estoque/Vasilhames` + `Features/Clientes/Emprestimos`): produto com
+  `ControlaVasilhame` acompanha três contadores — cheios (`QuantidadeEstoque`), vazios disponíveis
+  (`QuantidadeVasilhames`) e emprestados (`QuantidadeVasilhamesEmprestados`). `EmprestimoVasilhame`
+  é a fonte da verdade de "quem tem quantos". Na venda, `ItemVenda.EhEmprestimo` distingue
+  **troca** (vazio volta ao depósito) de **empréstimo** (vazio fica com o cliente e vira débito de
+  vasilhame). Há empréstimo/devolução manuais (tela do cliente e aba do estoque) e a tela
+  "Pátio"/controle de vasilhames (`ObterControleVasilhamesQuery` + `VasilhameGraficoBuilder`).
+- **Recompra / recorrência** (`RecorrenciaCompra`, `Common/RecorrenciaCompraAprendizado.cs`):
+  produto com `AvisarRecompra` e `DiasPadraoRecompra` aprende o intervalo médio entre compras por
+  cliente (`IntervaloMedioDias`) e o dashboard lista quem passou da data prevista. O recálculo roda
+  **depois** do `SaveChanges` da venda (precisa enxergar a venda nova) e exige um segundo save.
+- **Editar/excluir venda** (`Features/Admin/Vendas`, restrito a `Admin`): a edição **reverte** os
+  efeitos da venda original (saldo devedor fiado, estoque, pagamento no ato) e **recria** a venda
+  pelo mesmo `RegistrarVendaCommandHandler.RegistrarAsync`, preservando a `DataHora` original e as
+  regras de preço. A exclusão é **lógica** (`ExcluidaEm`) com estorno. Ambos chamam
+  `ReversaoVendaHelper` e `RecorrenciaCompraAprendizado`, e disparam o `VendasAtualizadasNotifier`.
+  Toda a tela vive na aba **Vendas** de `/configuracoes`.
+
+## Helpers compartilhados (`RevendaApp.Web/Common`)
+
+Antes de reimplementar, verifique se já existe:
+
+| Helper | Papel |
+|---|---|
+| `TenantContext` / `ITenantContext` | Tenant por claims; `EmpresaIdRequerida` é a guarda de todo handler de domínio |
+| `TransacaoComRetry` | Transação explícita compatível com a execution strategy de retry do Npgsql (`EnableRetryOnFailure`); obrigatório quando há `BeginTransaction` |
+| `VendaQueries` | Consultas de venda compartilhadas (ex.: última entrega por cliente, sem N+1) |
+| `VendaItemCalculo` / `Venda` | Rateio de desconto e lucro por item |
+| `RecorrenciaCompraAprendizado` | Cálculo do intervalo de recompra |
+| `RegraDeAcesso` | Regra única "usuário ativo + empresa ativa", usada no login e na recarga de sessão |
+| `DestinoSeguro` | Validação de `returnUrl` (fecha open redirect) |
+| `ValidadeAbsolutaImpersonacao` | Teto absoluto de 8h da sessão impersonada, via claim imutável |
+| `RenovacaoPrincipalImpersonacao` | Preserva as claims de impersonation nas reemissões do principal |
+| `BrasilTimeZone` | Conversão UTC ↔ dia civil de Brasília (dashboard, histórico) |
+| `UsuarioAtual` | Nome/Id do usuário para histórico de estoque e `Venda.VendedorId` |
+| `EnumRotulos` | Rótulos pt-BR dos enums |
+| `IdentidadeEmpresaService` | Nome/cor/logo exibidos no app bar (memoiza o logo) |
+| `CorPrimaria` (`Features/ConfiguracaoEmpresa`) | Conversão `MudColor` ↔ hex `#RGB`/`#RRGGBB` que o validador aceita; `EhHexValido` responde "isto é hex?" (o validador trata cor vazia como opcional) |
+| `AddPipelineBehaviors()` (`Common/Behaviors`) | Registro único dos `IPipelineBehavior` técnicos, na ordem que define o pipeline — chamado por `Program.cs` e pelo teste de ordem |
+| `SemaforoDoCircuito` / `SerializacaoDbContextBehavior` (`Common/Behaviors`) | Portão único do `AppDbContext` do circuito: serializa todo `Send` para que dois componentes nunca usem o contexto ao mesmo tempo (reentrante via `AsyncLocal`) |
 
 ## Refresh de telas em tempo real (Blazor Server)
 Telas que exibem dados de vendas (ex.: Dashboard) reagem a mudanças sem recarregar a página
@@ -312,6 +369,9 @@ Este projeto é desenvolvido com TDD. Para qualquer novo caso de uso/handler:
 - Nomes de domínio, telas e mensagens ao usuário em **português** (é o idioma do negócio); nomes
   de tipos/namespaces em C# seguem PascalCase normal do .NET.
 - Nullable reference types habilitado; evite `null!` — prefira modelagem explícita.
+- Helper que precisa ficar `internal` mas é provado por teste unitário é exposto a
+  `RevendaApp.UnitTests` via `<InternalsVisibleTo>` em `RevendaApp.Web.csproj` — não torne o helper
+  `public` só para testá-lo.
 - Cada slice deve ter testes antes da implementação (ver seção TDD acima).
 - Após cada fase de desenvolvimento concluída e validada, gerar um commit com mensagem no padrão
   [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `chore:`, `test:`).
@@ -330,3 +390,63 @@ Este projeto é desenvolvido com TDD. Para qualquer novo caso de uso/handler:
   `RegistrosAuditoria` sem filtro por `EmpresaId` fora da central. Toda entidade de domínio nova
   precisa de `EmpresaId` + filtro global + entrada no interceptor + atualização de
   `FiltrosGlobaisTests`.
+- **Não** remova o `PersistKeysToDbContext<AppDbContext>()`: é o que mantém cookies de autenticação
+  e tokens antiforgery válidos depois de um restart do container e o que permite que mais de uma
+  réplica compartilhe as mesmas chaves. As chaves ficam na tabela global `DataProtectionKeys` (sem
+  `EmpresaId`, sem filtro de tenant). Sem ele as chaves vão para o filesystem efêmero do container,
+  cada restart gera chaves novas e **todo mundo é deslogado**; com duas réplicas, a sessão quebra ao
+  trocar de instância.
+- **Não** remova o `UseForwardedHeaders` nem o `ForwardedHeadersConfig`: é o que faz o app enxergar
+  o esquema real (`https`) atrás do Caddy — sem ele o `UseHttpsRedirection`, as URLs absolutas e
+  redirects gerados saem com `http`, e o HSTS não é aplicado. A confiança é loopback + RFC1918
+  porque o Caddy no host alcança uma **porta publicada do container**, então o Kestrel vê o gateway
+  da bridge do Docker, não o loopback. Ajustável por `Proxy:RedesConfiaveis`; um CIDR malformado
+  **lança no startup** de propósito — um typo não pode alargar a confiança silenciosamente. O
+  cookie de sessão não depende disso: fora de Development o `SecurePolicy` é `Always`, que é
+  justamente o que impede um `X-Forwarded-Proto` forjado de rebaixar a sessão para texto puro.
+- **Não** remova o `builder.Property<uint>("xmin").IsRowVersion()` de `Produto`/`Cliente`: é a única
+  barreira contra duas vendas simultâneas do último item gravarem estoque negativo e contra dois
+  pagamentos concorrentes sobrescreverem o `SaldoDevedor`. `UseXminAsConcurrencyToken()` não existe
+  mais no Npgsql 10 — use `IsRowVersion()`.
+- **Armadilha nova (o token muda tudo):** como `Produto`/`Cliente` agora têm token de linha, qualquer
+  `ExecuteUpdate`/`ExecuteUpdateAsync` nessas tabelas grava por fora do change tracker e deixa a
+  entidade rastreada com `xmin` defasado — o próximo save no mesmo contexto falha com um conflito
+  **legítimo** (já quebrou um teste de integração). Use os métodos de domínio sobre a entidade
+  rastreada (`produto.AjustarVasilhames(n)` + `SaveChangesAsync`) em vez de update em massa.
+- **Não** remova o `ConcorrenciaBehavior` nem o `db.ChangeTracker.Clear()` dele: o `AppDbContext` é
+  scoped ao circuito Blazor, o EF **não** desfaz o estado das entidades num save que falhou, e os
+  diálogos mantêm o circuito vivo depois de exibir o erro. Sem a limpeza, a próxima operação do
+  mesmo circuito commitaria a venda/pagamento fantasma da tentativa que o operador acreditou ter
+  falhado.
+- **Ordem do pipeline do Mediator:** o **primeiro** `IPipelineBehavior` registrado é o **mais
+  externo** (o Mediator inverte a lista ao montar o encadeamento). A ordem é
+  `SerializacaoDbContextBehavior` → `ConcorrenciaBehavior` → `ValidationBehavior`:
+  `ConcorrenciaBehavior` vem antes de `ValidationBehavior` de propósito porque o conflito só nasce
+  no save do handler e precisa envolver o pipeline inteiro; `SerializacaoDbContextBehavior` fica
+  por fora dos dois porque o portão do `DbContext` tem de cobrir validação **e** handler, e o
+  `ChangeTracker.Clear()` do conflito precisa rodar antes de o portão ser liberado. **O registro não
+  fica em `Program.cs`**: vive em
+  `Common/Behaviors/PipelineDeMediatorExtensions.AddPipelineBehaviors()`, chamado pelo `Program.cs` e
+  pelo teste que pina a ordem. Reordene lá dentro — e rode o teste, que fica vermelho se a ordem
+  mudar.
+- **Um `AppDbContext` por circuito ⇒ operações do Mediator são serializadas.** O EF proíbe duas
+  operações simultâneas no mesmo contexto (`InvalidOperationException`: "A second operation was
+  started on this context instance"). Como o `AppDbContext` é scoped ao circuito Blazor, **dois
+  componentes que consultam no próprio `OnInitializedAsync` colidem**: o render do filho acontece
+  durante o `await` do pai. Foi assim que a aba "Minha Empresa" (que consulta) derrubou
+  `/configuracoes` ao virar a aba ativa inicial — a aba anterior era markup inline, sem consulta.
+  `Common/Behaviors/SemaforoDoCircuito` (scoped, `SemaphoreSlim(1,1)`) +
+  `SerializacaoDbContextBehavior` (mais externo do pipeline) fecham isso para **todo** `Send`.
+  A marca de reentrância é `AsyncLocal`, não campo: handler → `VendasAtualizadasNotifier` →
+  query do Dashboard é a mesma cadeia, e esperar por ela seria deadlock. **Não** troque o
+  `AppDbContext` por um contexto por operação: o filtro global fecha sobre
+  `ITenantContext.EmpresaId` e o change tracker precisa ser o mesmo entre validação e save.
+  Sintoma de que alguém furou o portão: `AppDbContext` concorrente com `Send` disparado fora do
+  Mediator (ex.: leitura síncrona em propriedade de serviço scoped, como
+  `IdentidadeEmpresaService.Logo`) durante um `await` de handler.
+- **Atualizar pacotes não é só `Directory.Packages.props`.** `dotnet list package --outdated` é
+  **cego a referências de MSBuild SDK**: o `Sdk="Aspire.AppHost.Sdk/<versão>"` em
+  `RevendaApp.AppHost.csproj` não aparece nele (já ficou uma versão atrás sem ninguém notar). Ao
+  subir a família Aspire, suba o SDK junto e confira o `Aspire.Hosting.AppHost` resolvido em
+  `obj/project.assets.json`. As famílias EF Core e de criptografia sobem **coesas** — versões
+  misturadas geram NU1605/NU1902, que são erro de build aqui.

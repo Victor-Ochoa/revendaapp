@@ -1,11 +1,13 @@
 @using RevendaApp.Web.Features.ConfiguracaoEmpresa
 @using FluentValidation
 @using Mediator
+@using MudBlazor.Utilities
 
 @inject ISender Sender
 @inject ISnackbar Snackbar
 @inject IJSRuntime Js
 @inject NavigationManager Navigation
+@inject ILogger<ConfigEmpresaTab> Logger
 
 @* Aba "Minha Empresa": o administrador da empresa edita o próprio cadastro.
    O Identificador aparece SOMENTE LEITURA (é imutável) e não há ação de ativar/inativar —
@@ -68,13 +70,13 @@ else
     </MudChipSet>
 
     <MudText Typo="Typo.subtitle2" Class="mt-2 mb-2">Aparência</MudText>
-    <div class="d-flex align-center gap-2 mb-4">
-        <MudTextField T="string" @bind-Value="_corPrimaria" Label="Cor primária (hex)" Variant="Variant.Outlined"
-                      Placeholder="#0A1F44" Class="flex-grow-1" MaxLength="9" />
-        @if (CorValida)
-        {
-            <div style="width:36px;height:36px;border-radius:6px;border:1px solid #ccc;background:@_corPrimaria;"></div>
-        }
+    <div class="mb-4">
+        @* `Value`/`ValueChanged` em vez de `@bind-Value`: o picker trabalha com `MudColor` e o
+           comando guarda `string`. `ShowAlpha=false` porque o domínio não tem canal de alfa
+           (`Empresa.CorPrimaria` é #RGB/#RRGGBB). *@
+        <MudColorPicker Label="Cor primária" Value="_corSelecionada"
+                        ValueChanged="AoMudarCor" Variant="Variant.Outlined"
+                        ShowAlpha="false" />
     </div>
 
     <div class="d-flex align-center gap-2 mb-2">
@@ -116,13 +118,10 @@ else
     private string? _cidade;
     private string? _estado;
     private string? _corPrimaria;
+    private MudColor? _corSelecionada;
     private string? _logo;
     private string? _novoTelefone;
     private List<string> _telefones = [];
-
-    private bool CorValida =>
-        !string.IsNullOrWhiteSpace(_corPrimaria)
-        && System.Text.RegularExpressions.Regex.IsMatch(_corPrimaria.Trim(), "^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$");
 
     protected override async Task OnInitializedAsync() => await CarregarAsync();
 
@@ -145,13 +144,24 @@ else
             _bairro = _detalhe.Bairro;
             _cidade = _detalhe.Cidade;
             _estado = _detalhe.Estado;
-            _corPrimaria = _detalhe.CorPrimaria;
+            var corCarregada = CorPrimaria.ParaPicker(_detalhe.CorPrimaria);
+            _corSelecionada = corCarregada;
+
+            // Só normaliza quando o valor gravado NÃO é um hex válido: reescrever um valor válido mudaria
+            // o casing (#0A1F44 → #0a1f44) e geraria uma linha de auditoria falsa em todo salvamento.
+            // Quando inválido, o picker exibe a cor padrão, e Salvar tem de enviar essa mesma cor.
+            _corPrimaria = CorPrimaria.EhHexValido(_detalhe.CorPrimaria)
+                ? _detalhe.CorPrimaria
+                : CorPrimaria.ParaHex(corCarregada);
             _logo = _detalhe.Logo;
             _telefones = _detalhe.Telefones.ToList();
         }
         catch (InvalidOperationException ex)
         {
             // Modo central/sem empresa: a query lança EmpresaIdRequerida — mostra o motivo.
+            // Loga porque esta captura esconde a causa: sem o log, uma falha de infraestrutura
+            // (ex.: contexto concorrente) aparece na tela como "modo central" e some do rastro.
+            Logger.LogError(ex, "Falha ao carregar os dados da empresa na aba Minha Empresa.");
             Snackbar.Add(ex.Message, MudBlazor.Severity.Error);
             _detalhe = null;
         }
@@ -173,6 +183,27 @@ else
     }
 
     private void RemoverTelefone(string telefone) => _telefones.Remove(telefone);
+
+    /// <summary>
+    /// Mantém <c>_corPrimaria</c> sincronizado com o picker no hex que o validador aceita
+    /// (6 dígitos, sem alfa). É esse valor que <see cref="SalvarAsync"/> envia no comando.
+    /// </summary>
+    /// <remarks>
+    /// O parâmetro é <c>MudColor?</c> de propósito: o <c>MudColorPicker</c> pode entregar
+    /// <b>null</b> ao <c>ValueChanged</c> quando o usuário limpa o campo hex, e o binding
+    /// <c>EventCallback&lt;MudColor?&gt;</c> aceita o handler anulável sem aviso. Sem o guard, o
+    /// null dereferenciado derruba o circuito e o admin perde o formulário inteiro.
+    /// </remarks>
+    private void AoMudarCor(MudColor? cor)
+    {
+        if (cor is null)
+        {
+            return; // o picker emite null quando o usuário limpa o campo hex
+        }
+
+        _corSelecionada = cor;
+        _corPrimaria = CorPrimaria.ParaHex(cor);
+    }
 
     /// <summary>
     /// Lê a imagem escolhida e converte para data-uri base64. Recusa arquivos acima do limite com

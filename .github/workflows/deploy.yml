@@ -1,7 +1,17 @@
 name: Deploy
 
 on:
-  push:
+  # Só depois que o CI concluir com sucesso na main. Com `push` os dois workflows disparavam em
+  # paralelo no mesmo commit e o deploy podia publicar um build que o CI ainda reprovaria.
+  #
+  # `workflow_run` traz dois cuidados que valem a leitura antes de mexer:
+  #  - roda a versão do workflow que está na default branch, não a do commit que disparou o CI;
+  #  - `github.sha` aqui é o último commit da default branch, NÃO o commit testado. Por isso o
+  #    checkout usa `workflow_run.head_sha` (abaixo) — sem ele o deploy taguearia/promoveria a
+  #    imagem errada se outro push chegasse enquanto o CI rodava.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -18,8 +28,19 @@ jobs:
       contents: read
     timeout-minutes: 45
 
+    # `workflow_run` dispara também quando o CI FALHA; sem esta guarda o deploy publicaria um
+    # commit reprovado. `workflow_dispatch` (deploy manual) não traz `workflow_run` no payload —
+    # nesse caso o evento é nulo e o job roda, que é o esperado para um deploy manual.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          # O commit que o CI testou — não o último da default branch (ver o comentário em `on`).
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -38,7 +59,10 @@ jobs:
         run: ssh-keyscan -H ${{ secrets.TARGET_HOST }} >> ~/.ssh/known_hosts
 
       - name: Set short SHA
-        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+        # `GITHUB_SHA` no evento `workflow_run` é o último commit da default branch, não o commit
+        # que o checkout pegou. Usar `git rev-parse` garante que a tag da imagem corresponde ao
+        # código realmente publicado.
+        run: echo "SHORT_SHA=$(git rev-parse --short=7 HEAD)" >> $GITHUB_ENV
 
       # Docker login manual antes do deploy: evita o passo login-to-registry do
       # aspire-ssh-deploy 0.1.0-ci.153 que quebra com 'IContainerRuntime' não registrado

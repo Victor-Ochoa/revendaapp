@@ -13,9 +13,11 @@
   <!-- Warnings are not treated as errors for test projects to keep TDD iteration fast. -->
   <PropertyGroup Condition="!$(MSBuildProjectName.EndsWith('Tests'))">
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <!-- NU1903 (vulnerabilidade de dependência transitiva) não quebra o build: o
-         Aspire.Hosting.Docker.SshDeploy 0.1.0-ci.153 depende de SSH.NET 2025.1.0 (pinning
-         exato), sem versão corrigida disponível. O CapZeroApp já usa essa mesma versão. -->
+    <!-- NU1903 (vulnerabilidade de dependência transitiva) não quebra o build. Exceção
+         dormente: o Aspire.Hosting.Docker.SshDeploy 0.1.0-ci.153 depende de SSH.NET
+         2025.1.0 (pinning exato), mas o pin de SSH.NET em Directory.Packages.props já resolve
+         para 2026.0.0 (patcheado) e a auditoria volta limpa. A exceção fica como guarda caso
+         esse pin seja removido algum dia. Não remover sem decisão consciente do humano. -->
     <WarningsNotAsErrors>NU1903</WarningsNotAsErrors>
   </PropertyGroup>
 
