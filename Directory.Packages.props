@@ -21,7 +21,9 @@
          de GHSA-qhrr-8q5h-9q3h (CVE-2026-92707, moderada): 2.5.302 é vulnerável,
          2.5.303 corrige. Sem o pin, NU1902 quebrava o restore do AppHost (CI).
          Subido para 2.5.307 na atualização do Aspire 13.6.4, que passou a exigir
-         MessagePack >= 2.5.307 (NU1109/downgrade com o pin antigo). -->
+         MessagePack >= 2.5.307 (NU1109/downgrade com o pin antigo). Hoje o pin é redundante
+         com o que o Aspire puxa e 2.5.307 já é a versão patcheada: sobrevive como piso
+         explícito, não como o que mantém o gate de auditoria fechado. -->
     <PackageVersion Include="MessagePack" Version="2.5.307" />
     <!-- Pin do SSH.NET (transitivo via Aspire.Hosting.Docker.SshDeploy) para a versão que
          corrige GHSA-mggc-4xg6-vcxf (RCE via SCP) e GHSA-q939-rpr3-3284 (path traversal):
