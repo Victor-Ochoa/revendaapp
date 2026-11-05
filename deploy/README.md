@@ -63,9 +63,18 @@ dotnet run --project src/RevendaApp.AppHost -- deploy
 O app fica acessível em **`https://revenda.app.201.23.87.110.sslip.io`** (certificado Let's
 Encrypt válido). Login com o email/senha de `Parameters:seed-admin-email/-password`.
 
-> O `deploy.yml` do GitHub Actions roda `aspire deploy -e Production` a partir de `main`; ele **não**
-> depende do job de CI, então os dois disparam em paralelo no mesmo push. Se o deploy precisar
-> bloquear em testes verdes, troque o gatilho por `workflow_run` (após `CI` concluir com sucesso).
+> O `deploy.yml` do GitHub Actions roda `aspire deploy -e Production` **depois** que o workflow `CI`
+> conclui com sucesso na `main` (`on.workflow_run`), então um build reprovado nunca vai para
+> produção. Três detalhes desse gatilho que não são óbvios:
+> - `workflow_run` dispara também em falha, por isso o job tem a guarda
+>   `conclusion == 'success' && event == 'push'`;
+> - o workflow roda a versão que está na default branch, não a do commit que disparou o CI;
+> - `github.sha` nesse evento é o **último commit da default branch**, não o commit testado. O
+>   checkout usa `workflow_run.head_sha` e o `SHORT_SHA` sai de `git rev-parse --short HEAD`, para a
+>   tag da imagem corresponder ao código publicado.
+>
+> Deploy manual continua por `workflow_dispatch` (o payload não traz `workflow_run`, e a guarda
+> libera o job).
 
 ---
 
