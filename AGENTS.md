@@ -174,7 +174,11 @@ Leia esta seção inteira antes de mexer em qualquer handler, entidade ou consul
 - **Novas telas.** `/central` (super admin): abas **Empresas** (criar, configurar, usuários, ver
   produtos, inativar/ativar, "Entrar como") e **Auditoria**. A aba **"Minha Empresa"** em
   `/configuracoes` deixa o admin da empresa editar nome/cor/logo do próprio cadastro
-  (`Features/ConfiguracaoEmpresa`).
+  (`Features/ConfiguracaoEmpresa`). Em `/configuracoes` a ordem das abas é **Minha Empresa**,
+  Usuários e Vendas — "Minha Empresa" é a **primeira** e a ordem é pinada por
+  `ConfiguracoesAbasTests`. A cor primária é escolhida num `MudColorPicker` (`ShowAlpha=false`, o
+  domínio não tem canal de alfa); a conversão para o hex do comando passa por `CorPrimaria` e o
+  teste garante que o valor enviado é aceito pelo validador real.
 
 ## Comandos comuns
 - **Rodar a aplicação local** (sobe Aspire + Postgres + Web, abre o Aspire Dashboard):
@@ -240,6 +244,8 @@ Antes de reimplementar, verifique se já existe:
 | `UsuarioAtual` | Nome/Id do usuário para histórico de estoque e `Venda.VendedorId` |
 | `EnumRotulos` | Rótulos pt-BR dos enums |
 | `IdentidadeEmpresaService` | Nome/cor/logo exibidos no app bar (memoiza o logo) |
+| `CorPrimaria` (`Features/ConfiguracaoEmpresa`) | Conversão `MudColor` ↔ hex `#RGB`/`#RRGGBB` que o validador aceita; `EhHexValido` responde "isto é hex?" (o validador trata cor vazia como opcional) |
+| `AddPipelineBehaviors()` (`Common/Behaviors`) | Registro único dos `IPipelineBehavior` técnicos, na ordem que define o pipeline — chamado por `Program.cs` e pelo teste de ordem |
 
 ## Refresh de telas em tempo real (Blazor Server)
 Telas que exibem dados de vendas (ex.: Dashboard) reagem a mudanças sem recarregar a página
@@ -414,4 +420,13 @@ Este projeto é desenvolvido com TDD. Para qualquer novo caso de uso/handler:
 - **Ordem do pipeline do Mediator:** o **primeiro** `IPipelineBehavior` registrado é o **mais
   externo** (o Mediator inverte a lista ao montar o encadeamento). `ConcorrenciaBehavior` vem antes
   de `ValidationBehavior` de propósito: o conflito só nasce no save do handler e precisa envolver o
-  pipeline inteiro.
+  pipeline inteiro. **O registro não fica em `Program.cs`**: vive em
+  `Common/Behaviors/PipelineDeMediatorExtensions.AddPipelineBehaviors()`, chamado pelo `Program.cs` e
+  pelo teste que pina a ordem. Reordene lá dentro — e rode o teste, que fica vermelho se a ordem
+  mudar.
+- **Atualizar pacotes não é só `Directory.Packages.props`.** `dotnet list package --outdated` é
+  **cego a referências de MSBuild SDK**: o `Sdk="Aspire.AppHost.Sdk/<versão>"` em
+  `RevendaApp.AppHost.csproj` não aparece nele (já ficou uma versão atrás sem ninguém notar). Ao
+  subir a família Aspire, suba o SDK junto e confira o `Aspire.Hosting.AppHost` resolvido em
+  `obj/project.assets.json`. As famílias EF Core e de criptografia sobem **coesas** — versões
+  misturadas geram NU1605/NU1902, que são erro de build aqui.
