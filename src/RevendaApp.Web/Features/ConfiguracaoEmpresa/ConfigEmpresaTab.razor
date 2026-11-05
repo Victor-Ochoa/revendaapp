@@ -7,6 +7,7 @@
 @inject ISnackbar Snackbar
 @inject IJSRuntime Js
 @inject NavigationManager Navigation
+@inject ILogger<ConfigEmpresaTab> Logger
 
 @* Aba "Minha Empresa": o administrador da empresa edita o próprio cadastro.
    O Identificador aparece SOMENTE LEITURA (é imutável) e não há ação de ativar/inativar —
@@ -158,6 +159,9 @@ else
         catch (InvalidOperationException ex)
         {
             // Modo central/sem empresa: a query lança EmpresaIdRequerida — mostra o motivo.
+            // Loga porque esta captura esconde a causa: sem o log, uma falha de infraestrutura
+            // (ex.: contexto concorrente) aparece na tela como "modo central" e some do rastro.
+            Logger.LogError(ex, "Falha ao carregar os dados da empresa na aba Minha Empresa.");
             Snackbar.Add(ex.Message, MudBlazor.Severity.Error);
             _detalhe = null;
         }

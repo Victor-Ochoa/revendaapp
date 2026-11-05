@@ -165,6 +165,11 @@ builder.Services.AddScoped<IPrincipalDoUsuario, PrincipalDoUsuario>();
 builder.Services.AddScoped<IUsuarioWriter, IdentityUsuarioWriter>();
 builder.Services.AddScoped<VendasAtualizadasNotifier>();
 
+// Portão único do AppDbContext scoped do circuito: o EF proíbe duas operações simultâneas no mesmo
+// contexto, e componentes diferentes consultam no próprio OnInitializedAsync (página + aba ativa).
+// Serializar no pipeline do Mediator cobre validação, handler e os Send que o handler dispara.
+builder.Services.AddScoped<SemaforoDoCircuito>();
+
 // Identidade exibida na interface (nome/cor/logo da empresa; "Revenda.App" no modo central). Scoped
 // porque memoiza o logo da empresa — evita reler o base64 (~500KB) a cada render do app bar.
 builder.Services.AddScoped<IdentidadeEmpresaService>();

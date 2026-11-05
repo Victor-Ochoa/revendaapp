@@ -246,6 +246,7 @@ Antes de reimplementar, verifique se já existe:
 | `IdentidadeEmpresaService` | Nome/cor/logo exibidos no app bar (memoiza o logo) |
 | `CorPrimaria` (`Features/ConfiguracaoEmpresa`) | Conversão `MudColor` ↔ hex `#RGB`/`#RRGGBB` que o validador aceita; `EhHexValido` responde "isto é hex?" (o validador trata cor vazia como opcional) |
 | `AddPipelineBehaviors()` (`Common/Behaviors`) | Registro único dos `IPipelineBehavior` técnicos, na ordem que define o pipeline — chamado por `Program.cs` e pelo teste de ordem |
+| `SemaforoDoCircuito` / `SerializacaoDbContextBehavior` (`Common/Behaviors`) | Portão único do `AppDbContext` do circuito: serializa todo `Send` para que dois componentes nunca usem o contexto ao mesmo tempo (reentrante via `AsyncLocal`) |
 
 ## Refresh de telas em tempo real (Blazor Server)
 Telas que exibem dados de vendas (ex.: Dashboard) reagem a mudanças sem recarregar a página
@@ -418,12 +419,31 @@ Este projeto é desenvolvido com TDD. Para qualquer novo caso de uso/handler:
   mesmo circuito commitaria a venda/pagamento fantasma da tentativa que o operador acreditou ter
   falhado.
 - **Ordem do pipeline do Mediator:** o **primeiro** `IPipelineBehavior` registrado é o **mais
-  externo** (o Mediator inverte a lista ao montar o encadeamento). `ConcorrenciaBehavior` vem antes
-  de `ValidationBehavior` de propósito: o conflito só nasce no save do handler e precisa envolver o
-  pipeline inteiro. **O registro não fica em `Program.cs`**: vive em
+  externo** (o Mediator inverte a lista ao montar o encadeamento). A ordem é
+  `SerializacaoDbContextBehavior` → `ConcorrenciaBehavior` → `ValidationBehavior`:
+  `ConcorrenciaBehavior` vem antes de `ValidationBehavior` de propósito porque o conflito só nasce
+  no save do handler e precisa envolver o pipeline inteiro; `SerializacaoDbContextBehavior` fica
+  por fora dos dois porque o portão do `DbContext` tem de cobrir validação **e** handler, e o
+  `ChangeTracker.Clear()` do conflito precisa rodar antes de o portão ser liberado. **O registro não
+  fica em `Program.cs`**: vive em
   `Common/Behaviors/PipelineDeMediatorExtensions.AddPipelineBehaviors()`, chamado pelo `Program.cs` e
   pelo teste que pina a ordem. Reordene lá dentro — e rode o teste, que fica vermelho se a ordem
   mudar.
+- **Um `AppDbContext` por circuito ⇒ operações do Mediator são serializadas.** O EF proíbe duas
+  operações simultâneas no mesmo contexto (`InvalidOperationException`: "A second operation was
+  started on this context instance"). Como o `AppDbContext` é scoped ao circuito Blazor, **dois
+  componentes que consultam no próprio `OnInitializedAsync` colidem**: o render do filho acontece
+  durante o `await` do pai. Foi assim que a aba "Minha Empresa" (que consulta) derrubou
+  `/configuracoes` ao virar a aba ativa inicial — a aba anterior era markup inline, sem consulta.
+  `Common/Behaviors/SemaforoDoCircuito` (scoped, `SemaphoreSlim(1,1)`) +
+  `SerializacaoDbContextBehavior` (mais externo do pipeline) fecham isso para **todo** `Send`.
+  A marca de reentrância é `AsyncLocal`, não campo: handler → `VendasAtualizadasNotifier` →
+  query do Dashboard é a mesma cadeia, e esperar por ela seria deadlock. **Não** troque o
+  `AppDbContext` por um contexto por operação: o filtro global fecha sobre
+  `ITenantContext.EmpresaId` e o change tracker precisa ser o mesmo entre validação e save.
+  Sintoma de que alguém furou o portão: `AppDbContext` concorrente com `Send` disparado fora do
+  Mediator (ex.: leitura síncrona em propriedade de serviço scoped, como
+  `IdentidadeEmpresaService.Logo`) durante um `await` de handler.
 - **Atualizar pacotes não é só `Directory.Packages.props`.** `dotnet list package --outdated` é
   **cego a referências de MSBuild SDK**: o `Sdk="Aspire.AppHost.Sdk/<versão>"` em
   `RevendaApp.AppHost.csproj` não aparece nele (já ficou uma versão atrás sem ninguém notar). Ao

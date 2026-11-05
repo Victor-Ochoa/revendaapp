@@ -72,23 +72,27 @@ public class ConcorrenciaBehaviorTests
     /// constroem o behavior à mão. O Mediator monta o encadeamento a partir de
     /// <c>IEnumerable&lt;IPipelineBehavior&lt;,&gt;&gt;</c> <b>invertendo</b> a lista
     /// (<c>pipelineBehaviours.Reverse()</c> no código gerado), então o <b>primeiro</b> registrado é o
-    /// <b>mais externo</b>. Se alguém reordenar ou remover o registro do <c>ConcorrenciaBehavior</c>,
-    /// o bug de gravação fantasma do change tracker volta sem nenhum outro teste ficar vermelho.
+    /// <b>mais externo</b>. Se alguém reordenar ou remover um destes registros, o defeito que cada
+    /// um fecha volta sem nenhum outro teste ficar vermelho: o do
+    /// <c>SerializacaoDbContextBehavior</c> é o <c>DbContext</c> concorrente, e o do
+    /// <c>ConcorrenciaBehavior</c> é a gravação fantasma do change tracker.
     /// </summary>
     /// <remarks>
     /// Usa o MESMO <see cref="PipelineDeMediatorExtensions.AddPipelineBehaviors"/> que o
-    /// <c>Program.cs</c> chama: um teste que copiasse as duas linhas de registro passaria mesmo se a
+    /// <c>Program.cs</c> chama: um teste que copiasse as linhas de registro passaria mesmo se a
     /// aplicação fosse reordenada, e não pinaria nada.
     /// </remarks>
     [Fact]
-    public void Registro_NoDi_DeveColocarConcorrenciaBehaviorPorForaDaValidacao()
+    public void Registro_NoDi_DeveColocarSerializacaoPorForaDaConcorrenciaEPorForaDaValidacao()
     {
         var servicos = new ServiceCollection();
         servicos.AddPipelineBehaviors();
 
-        // O ConcorrenciaBehavior recebe o AppDbContext scoped do circuito.
+        // O ConcorrenciaBehavior recebe o AppDbContext scoped do circuito; o portão de serialização
+        // recebe o semáforo do circuito.
         using var db = InMemoryDbContextFactory.Create(TenantTeste.EmpresaId);
         servicos.AddScoped(_ => db);
+        servicos.AddScoped<SemaforoDoCircuito>();
 
         using var provider = servicos.BuildServiceProvider();
         using var escopo = provider.CreateScope();
@@ -99,6 +103,7 @@ public class ConcorrenciaBehaviorTests
 
         Assert.Collection(
             pipeline,
+            maisExterno => Assert.IsType<SerializacaoDbContextBehavior<RegistrarPagamentoCommand, RegistrarPagamentoResult>>(maisExterno),
             externo => Assert.IsType<ConcorrenciaBehavior<RegistrarPagamentoCommand, RegistrarPagamentoResult>>(externo),
             interno => Assert.IsType<ValidationBehavior<RegistrarPagamentoCommand, RegistrarPagamentoResult>>(interno));
     }
