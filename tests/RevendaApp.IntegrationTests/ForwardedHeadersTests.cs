@@ -16,13 +16,15 @@ namespace RevendaApp.IntegrationTests.Tests;
 /// </para>
 /// <para>
 /// <b>O que este teste NÃO prova:</b> a rejeição de <c>X-Forwarded-Proto</c> vindo de uma origem
-/// <b>não confiável</b> (Review Focus #2 do plano). Não é observável por <see cref="WebAppFixture"/>:
-/// em modo dev o app escuta só em loopback e <c>ForwardedHeadersConfig</c> adiciona
-/// <see cref="System.Net.IPAddress.Loopback"/> a <c>KnownProxies</c> incondicionalmente, então toda
-/// requisição do <c>HttpClient</c> da fixture chega de um endereço confiável — um assert de "header
-/// forjado ignorado" passaria mesmo com a configuração errada (teste vacuoso). Essa garantia é
-/// pinada onde ela é real: <c>ForwardedHeadersConfigTests</c> (a lista de redes confiáveis e a
-/// recusa de CIDR malformado).
+/// <b>não confiável</b> (Review Focus #2 do plano). Isso não é observável por
+/// <see cref="WebAppFixture"/>: em modo dev o app escuta só em loopback e
+/// <c>ForwardedHeadersConfig</c> adiciona <see cref="System.Net.IPAddress.Loopback"/> a
+/// <c>KnownProxies</c> incondicionalmente, então toda requisição do <c>HttpClient</c> da fixture
+/// chega de um endereço confiável — um assert de "header forjado ignorado" aqui passaria mesmo com
+/// a configuração errada (teste vacuoso). Essa garantia é pinada onde ela é real: os testes de
+/// <c>ForwardedHeadersConfigTests</c> exercitam o <c>ForwardedHeadersMiddleware</c> diretamente
+/// contra uma origem pública (com controle positivo de confiança alargada), além da lista de redes
+/// confiáveis e da recusa de CIDR malformado.
 /// </para>
 /// </remarks>
 public class ForwardedHeadersTests(WebAppFixture fixture) : IClassFixture<WebAppFixture>

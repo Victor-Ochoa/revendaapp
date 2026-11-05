@@ -1,7 +1,10 @@
 using System.Net;
 
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 using RevendaApp.Web.Common;
 
@@ -11,8 +14,10 @@ namespace RevendaApp.UnitTests.Common;
 /// Em produção o Caddy roda no host e faz <c>reverse_proxy</c> para a porta publicada do container.
 /// O Kestrel então enxerga o gateway da bridge do Docker (172.x), não o loopback — confiar só em
 /// loopback deixaria o recurso inútil em produção. Por outro lado, aceitar qualquer origem permitiria
-/// que um cliente externo forjasse <c>X-Forwarded-Proto: https</c> e recebesse cookie <c>Secure</c>
-/// sobre HTTP (sessão descartada pelo navegador).
+/// que um cliente externo forjasse <c>X-Forwarded-Proto: https</c> e fizesse o app acreditar que a
+/// requisição chegou por HTTPS — o esquema errado contamina o <c>UseHttpsRedirection</c>, as URLs
+/// absolutas, os redirects gerados e o HSTS. (O cookie <c>Secure</c> não depende disso: fora de
+/// Development o <c>SecurePolicy</c> é <c>Always</c>, ver <c>Program.cs</c>.)
 /// </summary>
 public class ForwardedHeadersConfigTests
 {
@@ -112,6 +117,76 @@ public class ForwardedHeadersConfigTests
         ForwardedHeadersConfig.Configurar(opcoes, cidr);
 
         Assert.Contains(opcoes.KnownIPNetworks, rede => rede.ToString() == cidr);
+    }
+
+    /// <summary>
+    /// Exercita o middleware <see cref="ForwardedHeadersMiddleware"/> de verdade (sem socket) contra
+    /// uma origem PÚBLICA que forja <c>X-Forwarded-Proto: https</c>: a política de confiança tem de
+    /// ignorar o header, senão qualquer cliente externo escolhe o esquema que o app enxerga.
+    /// </summary>
+    [Fact]
+    public async Task Middleware_ignora_x_forwarded_de_origem_publica()
+    {
+        var opcoes = new ForwardedHeadersOptions();
+        ForwardedHeadersConfig.Configurar(opcoes);
+
+        var contexto = CriarContextoDeOrigemPublica();
+
+        await ExecutarMiddlewareAsync(opcoes, contexto);
+
+        // Header ignorado: o esquema e o host continuam os da conexão real.
+        Assert.Equal("http", contexto.Request.Scheme);
+        Assert.Equal("internal.local", contexto.Request.Host.Value);
+    }
+
+    /// <summary>
+    /// Controle positivo do teste acima: com a confiança alargada (<c>0.0.0.0/0</c>) o MESMO request
+    /// passa a ser aceito. Prova que o assert de "ignorado" não é vacuoso — ele depende de a lista de
+    /// redes confiáveis estar fazendo seu trabalho.
+    /// </summary>
+    [Fact]
+    public async Task Middleware_aceita_x_forwarded_quando_a_confianca_e_alargada()
+    {
+        var opcoes = new ForwardedHeadersOptions
+        {
+            ForwardedHeaders = ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost,
+            ForwardLimit = 1,
+        };
+        opcoes.KnownProxies.Clear();
+        opcoes.KnownIPNetworks.Clear();
+        opcoes.KnownIPNetworks.Add(System.Net.IPNetwork.Parse("0.0.0.0/0"));
+
+        var contexto = CriarContextoDeOrigemPublica();
+
+        await ExecutarMiddlewareAsync(opcoes, contexto);
+
+        Assert.Equal("https", contexto.Request.Scheme);
+        Assert.Equal("evil.example.com", contexto.Request.Host.Value);
+    }
+
+    /// <summary>
+    /// Request de uma origem pública (203.0.113.0/24 é TEST-NET-3, nunca roteável) com os headers
+    /// forjados. O <c>RemoteIpAddress</c> é o que a política de confiança avalia.
+    /// </summary>
+    private static DefaultHttpContext CriarContextoDeOrigemPublica()
+    {
+        var contexto = new DefaultHttpContext();
+        contexto.Connection.RemoteIpAddress = IPAddress.Parse("203.0.113.10");
+        contexto.Request.Scheme = "http";
+        contexto.Request.Host = new HostString("internal.local");
+        contexto.Request.Headers["X-Forwarded-Proto"] = "https";
+        contexto.Request.Headers["X-Forwarded-Host"] = "evil.example.com";
+        return contexto;
+    }
+
+    private static Task ExecutarMiddlewareAsync(ForwardedHeadersOptions opcoes, DefaultHttpContext contexto)
+    {
+        var middleware = new ForwardedHeadersMiddleware(
+            _ => Task.CompletedTask,
+            NullLoggerFactory.Instance,
+            Options.Create(opcoes));
+
+        return middleware.Invoke(contexto);
     }
 
     private static bool EhConfiavel(ForwardedHeadersOptions opcoes, IPAddress ip) =>

@@ -188,9 +188,9 @@ builder.Services.AddValidatorsFromAssemblyContaining<Program>();
 // Ordem do pipeline (verificada empiricamente: o PRIMEIRO registrado é o MAIS EXTERNO). O
 // ConcorrenciaBehavior fica por fora da validação para envolver o pipeline inteiro — um conflito
 // de concorrência (que só ocorre no save do handler) é traduzido num único ponto, e a limpeza do
-// change tracker vale para qualquer handler que mute Produto/Cliente.
-builder.Services.AddScoped(typeof(IPipelineBehavior<,>), typeof(ConcorrenciaBehavior<,>));
-builder.Services.AddScoped(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+// change tracker vale para qualquer handler que mute Produto/Cliente. O registro vive na extensão
+// para que o teste de DI pine a MESMA linha que a aplicação usa.
+builder.Services.AddPipelineBehaviors();
 
 // Add services to the container.
 builder.Services.AddRazorComponents()

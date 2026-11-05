@@ -75,14 +75,16 @@ public class ConcorrenciaBehaviorTests
     /// <b>mais externo</b>. Se alguém reordenar ou remover o registro do <c>ConcorrenciaBehavior</c>,
     /// o bug de gravação fantasma do change tracker volta sem nenhum outro teste ficar vermelho.
     /// </summary>
+    /// <remarks>
+    /// Usa o MESMO <see cref="PipelineDeMediatorExtensions.AddPipelineBehaviors"/> que o
+    /// <c>Program.cs</c> chama: um teste que copiasse as duas linhas de registro passaria mesmo se a
+    /// aplicação fosse reordenada, e não pinaria nada.
+    /// </remarks>
     [Fact]
     public void Registro_NoDi_DeveColocarConcorrenciaBehaviorPorForaDaValidacao()
     {
         var servicos = new ServiceCollection();
-
-        // Mesmo par de registros de Program.cs (a ordem é o contrato; não inverter).
-        servicos.AddScoped(typeof(IPipelineBehavior<,>), typeof(ConcorrenciaBehavior<,>));
-        servicos.AddScoped(typeof(IPipelineBehavior<,>), typeof(ValidationBehavior<,>));
+        servicos.AddPipelineBehaviors();
 
         // O ConcorrenciaBehavior recebe o AppDbContext scoped do circuito.
         using var db = InMemoryDbContextFactory.Create(TenantTeste.EmpresaId);
