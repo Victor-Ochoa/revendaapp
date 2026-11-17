@@ -193,7 +193,10 @@ lugar do `SeedData`/`SeedDemoData`. Não vai como SQL na migração porque a ló
 cliente, precisa ser testável e precisa deixar rastro; SQL de janela aqui seria ilegível e
 impossível de cobrir com o nível de teste exigido pelo projeto.
 
-- Roda em **qualquer ambiente**, inclusive Produção (é correção de dado, não demonstração).
+- Roda em **qualquer ambiente**, inclusive Produção (é correção de dado, não demonstração), na
+  **primeira subida** após a migração. Não há modo `dry-run` nem flag de habilitação: a
+  normalização é parte do deploy. O que garante a segurança é ela ser derivada de histórico
+  imutável, idempotente e auditada — não uma etapa manual de conferência.
 - **Marcador de execução única:** grava um `RegistroAuditoria` global
   (`Acao = "FiadoLegadoNormalizado"`, `Origem = "Sistema"`, `EmpresaId = null`) com o resumo
   (`clientes analisados`, `vendas normalizadas`, `divergências`). Se o marcador existe, a tarefa
