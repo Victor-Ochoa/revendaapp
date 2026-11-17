@@ -7,17 +7,19 @@ Status: aguardando revisão
 
 Criar a área **Relatórios** do Revenda.App, com uma landing que lista os relatórios
 disponíveis e um padrão único (seletor de mês → query → tela) que os próximos relatórios
-reaproveitam. Esta entrega inclui quatro relatórios:
+reaproveitam. A entrega começa por uma **correção de domínio no fiado** (Fase 0), porque o
+relatório de fiado exporia um número errado sem ela.
 
-| Relatório | Pergunta que responde | Fonte |
+| Entrega | Pergunta que responde | Fonte |
 |---|---|---|
+| **Fase 0 — quitação parcial de fiado** | Quanto cada venda fiado já foi paga e quanto falta | `Venda.ValorPagoFiado` (novo) |
 | **Estoque por dia** | Quanto entrou e quanto saiu de cada produto, dia a dia no mês | `MovimentacaoEstoque` |
 | **Vendas do mês** | Faturamento, lucro, nº de vendas, ticket e desconto por dia e por forma de pagamento | `Venda` + `ItemVenda` |
-| **Fiado** | Quanto tenho a receber, de quem, há quanto tempo, e quanto recebi no mês | `Cliente.SaldoDevedor`, `Venda` (fiado aberto), `Pagamento` |
+| **Fiado** | Quanto tenho a receber, de quem, há quanto tempo, e quanto recebi no mês | `Venda` (fiado), `Cliente.SaldoDevedor`, `Pagamento` |
 | **Vasilhames** | Quantos vasilhames estão na rua, com quem, e quantos voltaram no mês | `EmprestimoVasilhame`, `HistoricoEstoque` |
 
-Todos são **somente leitura**, restritos à empresa do usuário (`ApenasEmpresa`) e visíveis a
-qualquer usuário autenticado da empresa — mesmo critério de dashboards e listas.
+Todos os relatórios são **somente leitura**, restritos à empresa do usuário (`ApenasEmpresa`) e
+visíveis a qualquer usuário autenticado da empresa — mesmo critério de dashboards e listas.
 
 ## 2. Fora de escopo
 
@@ -25,8 +27,11 @@ qualquer usuário autenticado da empresa — mesmo critério de dashboards e lis
 - Relatórios da central (super admin, cross-tenant). A área é de domínio, não da central.
 - Reconstruir o **estoque físico** de um dia passado. Ver §4.1 — não é reconstruível com
   exatidão neste modelo e o relatório não finge que é.
-- Alterar as regras de lucro/fiado. O relatório de vendas consome a mesma regra do dashboard
-  (ver §4.2).
+- Reescrever o histórico de pagamentos parciais já ocorridos. Ver §4.0 — o dado não existe e
+  não será inventado.
+- Edição/exclusão de venda passar a permitir fiado parcialmente pago: a guarda atual é
+  reescrita para comparar dívida por venda (§4.0.4), mas a regra de negócio de o que pode ser
+  editado não muda nesta entrega.
 
 ## 3. Navegação e rotas
 
@@ -51,6 +56,118 @@ qualquer usuário autenticado da empresa — mesmo critério de dashboards e lis
 
 ## 4. Decisões de domínio
 
+### 4.0 Fase 0 — quitação parcial de fiado
+
+#### 4.0.1 O defeito
+
+`RegistrarPagamentoCommandHandler:60-67` aloca o pagamento em FIFO mas **tudo-ou-nada por
+venda**:
+
+```csharp
+if (valorPago < venda.ValorTotal) break;   // parcial não aloca nada
+venda.MarcarFiadoQuitado();
+```
+
+`Cliente.SaldoDevedor` é reduzido pelo valor pago inteiro, mas **nenhuma venda guarda quanto já
+foi pago**. Um fiado de R$ 60 com R$ 50 pagos continua `FiadoAberto` valendo R$ 60. Consequências
+medidas no código atual:
+
+| Sintoma | Local |
+|---|---|
+| Lucro da venda nunca é reconhecido no dashboard, mesmo com 83% pago | `ObterDashboardQueryHandler:42-45` |
+| Aging do relatório de fiado diria "R$ 60 em atraso" quando faltam R$ 10 | §6.3 (novo) |
+| Guarda de editar/excluir compara `SaldoDevedor < venda.ValorTotal` — dívida total do cliente contra **uma** venda; bloqueia exclusão legítima e libera indevida | `EditarVendaCommandHandler:58`, `ExcluirVendaCommandHandler:47` |
+
+#### 4.0.2 O modelo
+
+`Venda` ganha `ValorPagoFiado` (`decimal`, default 0) e a regra de domínio passa a ser
+**por venda**:
+
+```csharp
+public decimal ValorPagoFiado { get; private set; }        // quanto já foi alocado a esta venda
+public decimal SaldoFiado => ValorTotal - ValorPagoFiado;   // quanto ainda falta nesta venda
+
+/// Aloca um pagamento nesta venda (parcial ou total) e quita quando cobre o total.
+public decimal AbaterFiado(decimal valor);                  // devolve o valor efetivamente alocado
+```
+
+Invariantes, provadas por teste de domínio:
+
+- `AbaterFiado` só age em `FormaPagamento == Fiado` com `Status == FiadoAberto`; caso contrário
+  devolve 0 (sem efeito, sem exceção — mesma tolerância de `MarcarFiadoQuitado`).
+- Nunca aloca mais que `SaldoFiado`: o excedente fica com o chamador.
+- `ValorPagoFiado` nunca ultrapassa `ValorTotal`; `Status` vira `FiadoQuitado` exatamente quando
+  `SaldoFiado == 0`.
+- Venda excluída (`ExcluidaEm != null`) não recebe alocação.
+
+`MarcarFiadoQuitado()` **permanece** (usado pelo seed e por vendas legadas) e passa a ser
+equivalente a alocar o saldo restante — assim não existem dois caminhos divergentes.
+
+#### 4.0.3 Alocação FIFO no pagamento
+
+`RegistrarPagamentoCommandHandler` troca o `break` por alocação parcial:
+
+```
+valorPago = command.Valor
+para cada venda fiado aberta, por DataHora asc:
+    alocado = venda.AbaterFiado(valorPago)
+    valorPago -= alocado
+    se valorPago == 0: break
+```
+
+- O FIFO continua estrito: só sobra para a venda seguinte o que a anterior não absorveu.
+- Pagamento que excede a dívida total continua aceito (`Cliente.RegistrarPagamento` já faz clamp
+  em zero); o excedente não é alocado a nenhuma venda e o comportamento atual de "crédito a
+  favor" do cliente não muda nesta entrega.
+- `Cliente.SaldoDevedor` continua sendo reduzido pelo valor pago **inteiro**, como hoje — é o
+  total a receber, independente da alocação. A soma de `SaldoFiado` das vendas abertas é a
+  visão por venda do mesmo número; divergência entre as duas é justamente o que a Fase 0
+  corrige (o saldo do cliente era atualizado, o das vendas não).
+
+#### 4.0.4 Guarda de editar/excluir
+
+As duas guardas deixam de comparar o saldo total do cliente com o valor da venda e passam a
+comparar **a própria venda**:
+
+```csharp
+// antes: cliente.SaldoDevedor < venda.ValorTotal
+// depois:
+venda.FormaPagamento == FormaPagamento.Fiado && venda.Status == VendaStatus.FiadoQuitado
+```
+
+Motivo: uma venda `FiadoQuitado` já teve seu lucro reconhecido; desfazê-la exige estorno do
+pagamento, que o fluxo não faz. Uma venda `FiadoAberto` — mesmo parcialmente paga — pode ser
+estornada, e `ReversaoVendaHelper` já abate `venda.ValorTotal` do saldo do cliente. **Atenção:**
+com pagamento parcial o estorno hoje devolveria o total, não o que falta; o helper passa a abater
+`venda.SaldoFiado` quando a venda já teve pagamento alocado. Isso entra na Fase 0 com teste
+próprio.
+
+#### 4.0.5 Migração e backfill
+
+Migração `ValorPagoFiadoNaVenda`:
+
+1. `ADD COLUMN ValorPagoFiado numeric NOT NULL DEFAULT 0`.
+2. `UPDATE Vendas SET ValorPagoFiado = <ValorTotal>` para vendas `Fiado` com
+   `Status = 'FiadoQuitado'` — quitadas antes desta coluna existir foram pagas integralmente.
+3. `FiadoAberto` legadas ficam com 0: pagamentos parciais antigos **não são recuperáveis**
+   (o valor pago não foi registrado em lugar nenhum). Isso é assumido explicitamente; o
+   relatório de fiado pode superestimar a dívida dessas vendas antigas, e a tela avisa.
+4. `ValorTotal` é calculado (`ValorBruto − Desconto + ValorEntrega`), não é coluna: o `UPDATE`
+   precisa somar os itens. O SQL do backfill é escrito à mão na migração
+   (`UPDATE ... FROM (SELECT VendaId, SUM(...) ...)`) e coberto por teste de integração que roda
+   o `Up` sobre dados montados.
+
+#### 4.0.6 Efeito no dashboard
+
+Com `ValorPagoFiado`, o lucro reconhecido deixa de depender de "quitado por inteiro":
+
+- `VendaLucro.Reconhecido` (§4.2) reconhece o lucro de fiado **proporcionalmente ao que foi
+  pago**: `LucroTotal × (ValorPagoFiado / ValorTotal)`, e 100% quando `FiadoQuitado`.
+- Venda não-fiado continua 100%.
+- Isso muda números do dashboard — é a correção, não uma regressão. Os testes existentes de
+  `ObterDashboardQueryHandlerTests` são atualizados com o caso novo (fiado pago pela metade
+  reconhece metade do lucro) e mantêm os casos atuais (aberto = 0, quitado = 100%).
+
 ### 4.1 Estoque: movimento, não estoque físico
 
 `MovimentacaoEstoque` registra `Entrada`, `Saida` e `Ajuste`. O `Ajuste` grava o **novo total**
@@ -74,21 +191,25 @@ O lucro reconhecido exclui vendas fiado ainda em aberto e inclui fiado já quita
 (`ObterDashboardQueryHandler:42-45`). Duplicar essa regra no relatório criaria duas verdades.
 
 - Extrair a regra para `Common/VendaLucro.cs` (`Reconhecido(IEnumerable<Venda>)`) e usá-la no
-  handler do dashboard e no relatório. Os testes existentes do dashboard (`DashboardFeatureTests`)
-  são a rede de segurança da extração.
+  handler do dashboard e no relatório. A regra já incorpora a proporcionalidade da Fase 0
+  (§4.0.6). Os testes existentes do dashboard (`DashboardFeatureTests`,
+  `ObterDashboardQueryHandlerTests`) são a rede de segurança da extração.
 - `Venda.ValorTotal` e `LucroTotal` são propriedades calculadas sobre `Itens` (não são colunas):
   o handler precisa `Include(v => v.Itens)`, como o dashboard já faz.
 - Vendas com `ExcluidaEm != null` ficam fora de tudo.
 
-### 4.3 Fiado: aging pelo fiado mais antigo em aberto
+### 4.3 Fiado: aging pela dívida real de cada venda
 
-- `Cliente.SaldoDevedor` é o total a receber. As faixas de atraso são calculadas a partir da
-  **venda fiado mais antiga ainda com `Status == FiadoAberto`** por cliente.
-- Limitação conhecida, herdada do modelo: `RegistrarPagamentoCommandHandler` aloca o pagamento
-  tudo-ou-nada por venda e para no primeiro que não cobrir o total. Um pagamento parcial deixa
-  a venda antiga aberta, então o aging pode indicar atraso maior que o real. Isso é documentado
-  na tela (tooltip) e no XML doc do handler — o relatório não inventa uma idade que o modelo
-  não sabe.
+- `Cliente.SaldoDevedor` é o total a receber. Com a Fase 0, a dívida por venda é
+  `Venda.SaldoFiado` — o aging usa esse valor, não o `ValorTotal`.
+- As faixas de atraso são calculadas a partir da **venda fiado mais antiga com
+  `Status == FiadoAberto`** por cliente. Uma venda parcialmente paga e ainda aberta entra pelo
+  seu saldo real.
+- Limitação remanescente: vendas `FiadoAberto` anteriores à Fase 0 têm `ValorPagoFiado = 0`
+  porque o dado nunca foi registrado (§4.0.5). O aging dessas vendas pode superestimar a dívida.
+  A tela exibe um aviso quando o cliente tem alguma venda aberta sem alocação mas cujo
+  `SaldoDevedor` é menor que a soma de `SaldoFiado` das suas vendas — sinal de que existe
+  pagamento antigo não alocado.
 - Faixas: 0–30, 31–60, 61–90, 90+ dias.
 - Recebimentos do mês vêm de `Pagamento.Data` no intervalo, com total por forma de pagamento.
 
@@ -219,7 +340,8 @@ FaixaAging(string Rotulo, int Clientes, decimal Valor);   // 0–30, 31–60, 61
 
 ClienteDevedorItem(
     Guid ClienteId, string Nome, string Telefone,
-    decimal Saldo, int DiasAtraso, DateTime? VendaMaisAntigaEmAberto);
+    decimal Saldo, int DiasAtraso, DateTime? VendaMaisAntigaEmAberto,
+    bool TemPagamentoNaoAlocado);      // §4.3: aviso de venda legada sem alocação
 ```
 
 - Clientes com `SaldoDevedor > 0`, ordenados por saldo desc.
@@ -254,7 +376,14 @@ DevolucaoDoDia(int Dia, int Quantidade);
 
 ## 7. Persistência
 
-Uma migração `IndicesRelatorios` (nenhuma coluna nova):
+### 7.1 Fase 0 — `ValorPagoFiadoNaVenda`
+
+Coluna nova em `Vendas` + backfill (§4.0.5). Sem índice novo: a consulta de fiado em aberto já
+usa `IX_Vendas_EmpresaId_DataHora` e o filtro por `Status`.
+
+### 7.2 Fase 1 — `IndicesRelatorios`
+
+Nenhuma coluna nova; só índices:
 
 | Índice | Motivo |
 |---|---|
@@ -271,7 +400,25 @@ Os índices simples em `EmpresaId` dessas três tabelas são **substituídos** p
 
 TDD: cada item é escrito antes da implementação correspondente.
 
-### Unitários (`tests/RevendaApp.UnitTests`, InMemory)
+### Fase 0 — fiado
+
+| Teste | Tipo | Pina |
+|---|---|---|
+| `AbaterFiado_aloca_parcialmente_e_mantem_venda_aberta` | unit (domínio) | §4.0.2 |
+| `AbaterFiado_quita_quando_alocacao_cobre_o_total` | unit (domínio) | `SaldoFiado == 0` → `FiadoQuitado` |
+| `AbaterFiado_nao_aloca_alem_do_saldo_e_devolve_o_excedente` | unit (domínio) | limite superior |
+| `AbaterFiado_ignora_venda_que_nao_e_fiado_ou_ja_quitada` | unit (domínio) | tolerância |
+| `AbaterFiado_nao_altera_venda_excluida` | unit (domínio) | soft delete |
+| `Pagamento_parcial_reduz_o_saldo_da_venda_mais_antiga_sem_quitar` | unit (handler) | substitui o teste atual `NaoDeveMarcarVendaQuitada_QuandoPagamentoForParcial`, agora com `ValorPagoFiado == 40` |
+| `Pagamento_que_cobre_duas_vendas_quita_a_antiga_e_abate_a_seguinte` | unit (handler) | FIFO com alocação parcial |
+| `Pagamento_maior_que_a_divida_nao_aloca_excedente` | unit (handler) | §4.0.3 |
+| `Reversao_de_venda_parcialmente_paga_abate_apenas_o_saldo_fiado` | unit (helper) | §4.0.4 |
+| `Edicao_de_venda_fiado_aberta_parcialmente_paga_e_permitida` | unit (handler) | guarda reescrita |
+| `Edicao_de_venda_fiado_quitada_e_bloqueada` | unit (handler) | guarda reescrita |
+| `Backfill_marca_vendas_fiado_quitadas_com_valor_total` | integração (migração) | §4.0.5 passo 2 |
+| `Backfill_deixa_fiado_aberto_legado_com_zero` | integração (migração) | §4.0.5 passo 3 |
+
+### Relatórios — unitários (InMemory)
 
 | Teste | Pina |
 |---|---|
@@ -286,25 +433,59 @@ TDD: cada item é escrito antes da implementação correspondente.
 | `Estoque_mes_sem_movimento_retorna_vetores_zerados` | estado vazio |
 | `Estoque_calcula_totais_liquido_e_estoque_atual` | totais |
 | `Vendas_exclui_venda_excluida_logicamente` | soft delete |
-| `Vendas_nao_reconhece_lucro_de_fiado_em_aberto` | §4.2 |
+| `Vendas_reconhece_lucro_proporcional_ao_pago_no_fiado` | §4.0.6 |
 | `Vendas_calcula_ticket_medio_e_zero_sem_vendas` | divisão por zero |
-| `Fiado_calcula_faixas_de_atraso_pela_venda_mais_antiga_em_aberto` | §4.3 |
+| `Fiado_usa_saldo_fiado_e_nao_o_valor_total_no_aging` | §4.3 |
+| `Fiado_marca_aviso_quando_saldo_do_cliente_e_menor_que_a_soma_das_vendas` | §4.3 legado |
 | `Fiado_soma_recebimentos_do_mes_por_forma` | pagamentos |
 | `Vasilhames_usa_historico_para_devolucoes_parciais_do_mes` | §4.4 |
 | `Vasilhames_lista_apenas_produtos_que_controlam_vasilhame` | filtro |
 | `Relatorios_sem_empresa_selecionada_lancam` (um teste por handler) | guarda de tenant |
 
-### Integração (`tests/RevendaApp.IntegrationTests`, `DatabaseFixture`)
+### Relatórios — integração (`tests/RevendaApp.IntegrationTests`, `DatabaseFixture`)
 
 | Teste | Pina |
 |---|---|
 | `RelatorioEstoque_agrega_movimentos_do_mes_contra_Postgres` | agrupamento e intervalo reais |
-| `RelatorioEstoque_nao_ve_movimento_de_outra_empresa` | isolamento |
 | `RelatorioVendas_bate_com_dashboard_no_mesmo_periodo` | a regra de lucro não divergiu |
 | `RelatorioFiado_aging_e_recebimentos_contra_Postgres` | aging + pagamento real |
 | `RelatorioVasilhames_devolucao_parcial_aparece_no_mes` | §4.4 |
 
 Cada classe chama `await fixture.ResetDatabaseAsync()` no `InitializeAsync`.
+
+### 8.1 Isolamento entre empresas (obrigatório, não opcional)
+
+O `AGENTS.md` trava a lista de entidades filtradas por `FiltrosGlobaisTests`; todo relatório novo
+é uma **leitura nova** e precisa de prova de isolamento contra o Postgres real, com **duas
+empresas e controle positivo** — mesmo padrão de `TenancyIsolationTests` (o assert de ausência só
+vale junto com o de presença na própria empresa).
+
+Os quatro relatórios leem cinco tabelas: `MovimentacaoEstoque`, `Venda`, `ItemVenda`,
+`Pagamento`, `EmprestimoVasilhame`, `HistoricoEstoque` e `Produto`. A matriz de cobertura:
+
+| Tabela | Filtro que a protege | Teste de isolamento |
+|---|---|---|
+| `MovimentacaoEstoque` | global (`EmpresaId`) | `RelatorioEstoque_de_A_nao_mostra_movimento_de_B` |
+| `Produto` | global | coberto pelo teste acima (nome/estoque do produto de B ausente) |
+| `Venda` / `ItemVenda` | global | `RelatorioVendas_de_A_nao_mostra_venda_de_B` |
+| `Pagamento` | global | `RelatorioFiado_de_A_nao_soma_recebimento_de_B` |
+| `EmprestimoVasilhame` | global | `RelatorioVasilhames_de_A_nao_mostra_emprestimo_de_B` |
+| `HistoricoEstoque` | global | `RelatorioVasilhames_de_A_nao_soma_devolucao_de_B` |
+| `Cliente` (saldo) | global | `RelatorioFiado_de_A_nao_lista_cliente_de_B` |
+| `Empresa` (identidade) | **sem filtro** (por design) | não é lida pelos relatórios |
+
+Regras de implementação que os testes cobrem:
+
+- Todo handler começa por `tenant.EmpresaIdRequerida(...)` — em modo central **lança**, não
+  devolve "todas as empresas" (um teste por handler, §8 unitários).
+- Nenhum handler usa `IgnoreQueryFilters()`. Isso é verificado por teste de arquitetura
+  (`Relatorios_nao_usam_IgnoreQueryFilters`), que falha se a chamada aparecer no código dos
+  relatórios — a tentação existe justamente ao montar agregações.
+- Nenhum relatório aceita `EmpresaId` como parâmetro vindo da UI: o tenant vem só do
+  `ITenantContext`. A query carrega apenas `PeriodoMes`.
+- Os testes de isolamento vivem em `RelatoriosIsolationTests` (classe própria, no padrão de
+  `TenancyIsolationTests`), com `EmpresaTestHelper` e `CreateDbContext(Guid?)` — dados de cada
+  empresa criados por um contexto **com o tenant dela**, nunca pelo central.
 
 ### Componentes
 
@@ -318,19 +499,25 @@ commit próprio (Conventional Commits).
 
 | Fase | Conteúdo | MR |
 |---|---|---|
-| 1 | `PeriodoMes`, `RelatorioShell`, landing `/relatorios`, botão no `MainLayout` e em `EstoqueLista`, relatório de **estoque**, migração de índices | MR #1 |
-| 2 | Relatório de **vendas** + extração de `VendaLucro` (dashboard passa a usar) | MR #2 |
-| 3 | Relatório de **fiado** | MR #3 |
-| 4 | Relatório de **vasilhames** | MR #4 |
+| 0 | `Venda.ValorPagoFiado` + `AbaterFiado`, alocação FIFO parcial, guardas de editar/excluir, `ReversaoVendaHelper`, migração + backfill, `VendaLucro` proporcional | MR #1 |
+| 1 | `PeriodoMes`, `RelatorioShell`, landing `/relatorios`, botão no `MainLayout` e em `EstoqueLista`, relatório de **estoque**, migração de índices, `RelatoriosIsolationTests` | MR #2 |
+| 2 | Relatório de **vendas** (consome `VendaLucro` da fase 0) | MR #3 |
+| 3 | Relatório de **fiado** (consome `SaldoFiado` da fase 0) | MR #4 |
+| 4 | Relatório de **vasilhames** | MR #5 |
 
-A fase 1 sozinha já entrega o pedido original. As demais são incrementais e independentes entre
-si, então podem ser reordenadas ou interrompidas sem retrabalho.
+A Fase 0 vem primeiro porque os relatórios de vendas e fiado dependem dela para não exibir
+números errados. A Fase 1 sozinha já entrega o pedido original de estoque. As fases 2–4 são
+incrementais e independentes entre si, então podem ser reordenadas ou interrompidas sem
+retrabalho.
 
 ## 10. Riscos e limitações assumidas
 
 | Risco | Mitigação |
 |---|---|
-| Aging de fiado pode superestimar atraso (pagamento parcial não quita venda) | documentado em tooltip e no XML doc; corrigir o modelo é outra feature |
+| Fiado parcial legado (anterior à Fase 0) não tem valor pago registrado | backfill marca só `FiadoQuitado`; o relatório avisa o cliente nessa condição (`TemPagamentoNaoAlocado`) em vez de inventar o número |
+| A Fase 0 **muda números do dashboard** (lucro de fiado parcialmente pago passa a ser reconhecido) | é a correção; testes do dashboard atualizados no mesmo MR, com caso novo explícito |
+| Estorno de venda parcialmente paga precisa devolver só o saldo, não o total | `ReversaoVendaHelper` ajustado e coberto por teste na Fase 0 |
 | Relatório de estoque não representa estoque físico de dias passados | rótulo explícito "movimento do mês" + "estoque atual" separado |
 | Mês inteiro de movimentos materializado em memória | volume esperado é baixo por empresa; índice composto e projeção mínima; se crescer, agregação no SQL com offset fixo é o próximo passo |
 | `MainLayout` sem rendermode limita o menu a botões simples | a landing absorve a navegação; dropdown exige componente interativo e fica para quando houver demanda |
+| Relatório novo esquecer o filtro de empresa | `RelatoriosIsolationTests` com duas empresas e controle positivo (§8.1) + teste que proíbe `IgnoreQueryFilters` nos relatórios |
