@@ -27,8 +27,8 @@ visíveis a qualquer usuário autenticado da empresa — mesmo critério de dash
 - Relatórios da central (super admin, cross-tenant). A área é de domínio, não da central.
 - Reconstruir o **estoque físico** de um dia passado. Ver §4.1 — não é reconstruível com
   exatidão neste modelo e o relatório não finge que é.
-- Reescrever o histórico de pagamentos parciais já ocorridos. Ver §4.0 — o dado não existe e
-  não será inventado.
+- Alterar `Cliente.SaldoDevedor` durante a normalização. O saldo do cadastro é a autoridade de
+  cobrança e não é reescrito; divergências são registradas, não silenciadas (§4.0.5).
 - Edição/exclusão de venda passar a permitir fiado parcialmente pago: a guarda atual é
   reescrita para comparar dívida por venda (§4.0.4), mas a regra de negócio de o que pode ser
   editado não muda nesta entrega.
@@ -142,20 +142,71 @@ com pagamento parcial o estorno hoje devolveria o total, não o que falta; o hel
 `venda.SaldoFiado` quando a venda já teve pagamento alocado. Isso entra na Fase 0 com teste
 próprio.
 
-#### 4.0.5 Migração e backfill
+#### 4.0.5 Migração e normalização dos dados legados
 
-Migração `ValorPagoFiadoNaVenda`:
+**Migração `ValorPagoFiadoNaVenda`:**
 
 1. `ADD COLUMN ValorPagoFiado numeric NOT NULL DEFAULT 0`.
 2. `UPDATE Vendas SET ValorPagoFiado = <ValorTotal>` para vendas `Fiado` com
-   `Status = 'FiadoQuitado'` — quitadas antes desta coluna existir foram pagas integralmente.
-3. `FiadoAberto` legadas ficam com 0: pagamentos parciais antigos **não são recuperáveis**
-   (o valor pago não foi registrado em lugar nenhum). Isso é assumido explicitamente; o
-   relatório de fiado pode superestimar a dívida dessas vendas antigas, e a tela avisa.
-4. `ValorTotal` é calculado (`ValorBruto − Desconto + ValorEntrega`), não é coluna: o `UPDATE`
-   precisa somar os itens. O SQL do backfill é escrito à mão na migração
-   (`UPDATE ... FROM (SELECT VendaId, SUM(...) ...)`) e coberto por teste de integração que roda
-   o `Up` sobre dados montados.
+   `Status = 'FiadoQuitado'` — quitadas antes desta coluna existir foram pagas integralmente,
+   então o valor é exato e não precisa de reconstrução. `ValorTotal` é calculado
+   (`ValorBruto − Desconto + ValorEntrega`) e não é coluna: o `UPDATE` soma os itens via
+   `UPDATE ... FROM (SELECT VendaId, SUM(PrecoUnitario * Quantidade) ...)`. Coberto por teste
+   de integração que roda o `Up` sobre dados montados.
+
+**Normalização dos `FiadoAberto` legados (tarefa de bootstrap, não SQL na migração):**
+
+A alocação parcial antiga **é recuperável**. `Pagamento.VendaId` distingue as duas naturezas:
+
+| `Pagamento.VendaId` | Significado |
+|---|---|
+| `!= null` | pagamento no ato de venda não-fiado (não abate fiado) |
+| `null` | abatimento de saldo devedor — **exatamente** o dinheiro que pagou fiado |
+
+Logo, por cliente, a alocação correta é determinística:
+
+```
+vendas  = Vendas fiado, ExcluidaEm == null, ordenadas por DataHora asc
+pagamentos = Pagamentos do cliente com VendaId == null, ordenados por Data asc
+restante = 0
+para cada pagamento (em ordem):
+    restante += pagamento.Valor
+    para cada venda ainda não quitada (na ordem):
+        alocado = min(restante, Venda.SaldoFiado)
+        Venda.ValorPagoFiado += alocado
+        restante -= alocado
+        se Venda.SaldoFiado == 0: Status = FiadoQuitado
+```
+
+Por que isso é seguro e não inventa dado:
+
+- As duas fontes são **histórico imutável** (`Venda.DataHora`, `Venda.ValorTotal` com os itens,
+  `Pagamento.Data`, `Pagamento.Valor`). Não há estimativa.
+- Vendas excluídas ficam de fora — e `ReversaoVendaHelper` já abateu o `ValorTotal` do
+  `SaldoDevedor` ao excluir, então o total continua fechando.
+- É **idempotente**: recalcular sempre produz o mesmo resultado, porque só lê fatos gravados.
+- O excedente (pagamento maior que a dívida, crédito a favor) não é alocado a nenhuma venda.
+
+**Onde roda.** Serviço `NormalizarFiadoLegado` em `Features/Fiado/Normalizacao/`, chamado no
+bootstrap do `Program.cs` **depois** de `MigrateAsync()` e antes de servir requisições — mesmo
+lugar do `SeedData`/`SeedDemoData`. Não vai como SQL na migração porque a lógica é FIFO por
+cliente, precisa ser testável e precisa deixar rastro; SQL de janela aqui seria ilegível e
+impossível de cobrir com o nível de teste exigido pelo projeto.
+
+- Roda em **qualquer ambiente**, inclusive Produção (é correção de dado, não demonstração).
+- **Marcador de execução única:** grava um `RegistroAuditoria` global
+  (`Acao = "FiadoLegadoNormalizado"`, `Origem = "Sistema"`, `EmpresaId = null`) com o resumo
+  (`clientes analisados`, `vendas normalizadas`, `divergências`). Se o marcador existe, a tarefa
+  não roda de novo. `RegistroAuditoria.Origens` ganha a constante `Sistema`.
+- **Reconciliação:** ao final, compara `sum(Venda.SaldoFiado)` das vendas abertas com
+  `Cliente.SaldoDevedor`. Divergência **não** é corrigida à força (o `SaldoDevedor` é a
+  autoridade usada por cobrança e dashboard) — é registrada no `Detalhes` do marcador e no log
+  de bootstrap, com o id do cliente. Divergência esperada só quando houve ajuste manual de
+  saldo; qualquer outro caso indica bug e aparece no log.
+- Falha na normalização **não derruba o startup**: é envolvida em try/catch que loga erro e
+  segue. O app continua funcionando; o relatório de fiado marca os clientes afetados com
+  `TemPagamentoNaoAlocado` (§4.3).
+- Log de bootstrap: início, fim e o resumo — mesmo padrão de `LogsDoBootstrap`.
 
 #### 4.0.6 Efeito no dashboard
 
@@ -205,11 +256,10 @@ O lucro reconhecido exclui vendas fiado ainda em aberto e inclui fiado já quita
 - As faixas de atraso são calculadas a partir da **venda fiado mais antiga com
   `Status == FiadoAberto`** por cliente. Uma venda parcialmente paga e ainda aberta entra pelo
   seu saldo real.
-- Limitação remanescente: vendas `FiadoAberto` anteriores à Fase 0 têm `ValorPagoFiado = 0`
-  porque o dado nunca foi registrado (§4.0.5). O aging dessas vendas pode superestimar a dívida.
-  A tela exibe um aviso quando o cliente tem alguma venda aberta sem alocação mas cujo
-  `SaldoDevedor` é menor que a soma de `SaldoFiado` das suas vendas — sinal de que existe
-  pagamento antigo não alocado.
+- O legado é **normalizado** (§4.0.5), então não há limitação de aging por dado ausente. O
+  `TemPagamentoNaoAlocado` continua existindo como **detector de divergência**: se a
+  reconciliação do bootstrap registrou que `sum(SaldoFiado) != Cliente.SaldoDevedor` para o
+  cliente, a linha vem marcada e a tela mostra "saldo do cadastro difere das vendas".
 - Faixas: 0–30, 31–60, 61–90, 90+ dias.
 - Recebimentos do mês vêm de `Pagamento.Data` no intervalo, com total por forma de pagamento.
 
@@ -341,7 +391,7 @@ FaixaAging(string Rotulo, int Clientes, decimal Valor);   // 0–30, 31–60, 61
 ClienteDevedorItem(
     Guid ClienteId, string Nome, string Telefone,
     decimal Saldo, int DiasAtraso, DateTime? VendaMaisAntigaEmAberto,
-    bool TemPagamentoNaoAlocado);      // §4.3: aviso de venda legada sem alocação
+    bool TemDivergenciaDeSaldo);       // §4.3: sum(SaldoFiado) != SaldoDevedor do cadastro
 ```
 
 - Clientes com `SaldoDevedor > 0`, ordenados por saldo desc.
@@ -416,7 +466,16 @@ TDD: cada item é escrito antes da implementação correspondente.
 | `Edicao_de_venda_fiado_aberta_parcialmente_paga_e_permitida` | unit (handler) | guarda reescrita |
 | `Edicao_de_venda_fiado_quitada_e_bloqueada` | unit (handler) | guarda reescrita |
 | `Backfill_marca_vendas_fiado_quitadas_com_valor_total` | integração (migração) | §4.0.5 passo 2 |
-| `Backfill_deixa_fiado_aberto_legado_com_zero` | integração (migração) | §4.0.5 passo 3 |
+| `Normalizacao_aloca_pagamentos_parciais_nas_vendas_mais_antigas` | unit | FIFO a partir de `Pagamento.VendaId == null` |
+| `Normalizacao_quita_venda_quando_a_alocacao_cobre_o_total` | unit | status |
+| `Normalizacao_ignora_pagamento_de_venda_no_ato` | unit | `VendaId != null` não abate fiado |
+| `Normalizacao_ignora_venda_excluida` | unit | soft delete |
+| `Normalizacao_e_idempotente` | unit | rodar duas vezes dá o mesmo resultado |
+| `Normalizacao_nao_aloca_excedente_de_credito` | unit | pagamento > dívida |
+| `Normalizacao_nao_roda_quando_o_marcador_ja_existe` | unit | execução única |
+| `Normalizacao_registra_divergencia_sem_alterar_saldo_do_cliente` | unit | reconciliação |
+| `Normalizacao_falha_nao_derruba_o_bootstrap` | unit | try/catch |
+| `Normalizacao_corrige_banco_legado_contra_Postgres` | integração | cenário real ponta a ponta |
 
 ### Relatórios — unitários (InMemory)
 
@@ -492,29 +551,42 @@ Regras de implementação que os testes cobrem:
 `RelatoriosHome` lista os quatro relatórios com link correto (teste de markup, no padrão de
 `EstoqueListaAdminTests`).
 
-## 9. Fases de entrega
+## 9. Fases de execução — **uma única entrega (um MR)**
 
-Cada fase termina com build, `dotnet test` e `dotnet format --verify-no-changes` verdes, e um
-commit próprio (Conventional Commits).
+Cada deploy é único: a entrega é **um MR só**, com as fases como **commits encadeados na mesma
+branch**, não como MRs separados. Cada fase termina com build, `dotnet test` e
+`dotnet format --verify-no-changes` verdes antes do commit seguinte.
 
-| Fase | Conteúdo | MR |
+| # | Commit | Conteúdo |
 |---|---|---|
-| 0 | `Venda.ValorPagoFiado` + `AbaterFiado`, alocação FIFO parcial, guardas de editar/excluir, `ReversaoVendaHelper`, migração + backfill, `VendaLucro` proporcional | MR #1 |
-| 1 | `PeriodoMes`, `RelatorioShell`, landing `/relatorios`, botão no `MainLayout` e em `EstoqueLista`, relatório de **estoque**, migração de índices, `RelatoriosIsolationTests` | MR #2 |
-| 2 | Relatório de **vendas** (consome `VendaLucro` da fase 0) | MR #3 |
-| 3 | Relatório de **fiado** (consome `SaldoFiado` da fase 0) | MR #4 |
-| 4 | Relatório de **vasilhames** | MR #5 |
+| 0 | `feat: registra quitacao parcial de fiado por venda` | `Venda.ValorPagoFiado` + `AbaterFiado`, alocação FIFO parcial, guardas de editar/excluir, `ReversaoVendaHelper`, `VendaLucro` proporcional, migração |
+| 1 | `feat: normaliza quitacao de fiado legado no bootstrap` | `NormalizarFiadoLegado`, marcador de execução única, reconciliação, log de bootstrap |
+| 2 | `feat: adiciona area de relatorios com estoque por dia` | `PeriodoMes`, `RelatorioShell`, landing `/relatorios`, botões de navegação, relatório de estoque, migração de índices |
+| 3 | `feat: adiciona relatorio de vendas do mes` | consome `VendaLucro` |
+| 4 | `feat: adiciona relatorio de fiado` | consome `SaldoFiado` normalizado |
+| 5 | `feat: adiciona relatorio de vasilhames` | — |
 
-A Fase 0 vem primeiro porque os relatórios de vendas e fiado dependem dela para não exibir
-números errados. A Fase 1 sozinha já entrega o pedido original de estoque. As fases 2–4 são
-incrementais e independentes entre si, então podem ser reordenadas ou interrompidas sem
-retrabalho.
+Por que a ordem importa dentro do mesmo MR: as fases 3 e 4 só exibem número correto porque as
+fases 0 e 1 já corrigiram e normalizaram o fiado. Se a entrega for interrompida no meio, a
+ordem dos commits deixa o repositório coerente em cada ponto — cada commit compila e passa nos
+testes.
+
+Critério de pronto do MR:
+
+- `dotnet build` sem warnings novos.
+- `dotnet test` completo verde (unitários + integração).
+- `dotnet format RevendaApp.slnx --no-restore --verify-no-changes` limpo.
+- `RelatoriosIsolationTests` verde (§8.1).
+- Os quatro relatórios acessíveis por `/relatorios` e pelo menu.
+- Normalização do fiado verificada contra um banco com dados legados (§8, teste de integração
+  `Normalizacao_corrige_banco_legado_contra_Postgres`).
 
 ## 10. Riscos e limitações assumidas
 
 | Risco | Mitigação |
 |---|---|
-| Fiado parcial legado (anterior à Fase 0) não tem valor pago registrado | backfill marca só `FiadoQuitado`; o relatório avisa o cliente nessa condição (`TemPagamentoNaoAlocado`) em vez de inventar o número |
+| Normalização do legado altera dados de produção na primeira subida | deriva só de histórico imutável (`Pagamento.VendaId == null`, `Venda.DataHora`, `ValorTotal`), é idempotente, roda uma vez com marcador em `RegistroAuditoria` e deixa resumo + divergências no log; falha não derruba o startup |
+| Normalização pode divergir do `SaldoDevedor` do cadastro | reconciliação registra a divergência e **não** sobrescreve o saldo; o relatório marca o cliente (`TemDivergenciaDeSaldo`) |
 | A Fase 0 **muda números do dashboard** (lucro de fiado parcialmente pago passa a ser reconhecido) | é a correção; testes do dashboard atualizados no mesmo MR, com caso novo explícito |
 | Estorno de venda parcialmente paga precisa devolver só o saldo, não o total | `ReversaoVendaHelper` ajustado e coberto por teste na Fase 0 |
 | Relatório de estoque não representa estoque físico de dias passados | rótulo explícito "movimento do mês" + "estoque atual" separado |
