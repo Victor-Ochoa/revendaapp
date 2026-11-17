@@ -205,7 +205,7 @@ impossível de cobrir com o nível de teste exigido pelo projeto.
   saldo; qualquer outro caso indica bug e aparece no log.
 - Falha na normalização **não derruba o startup**: é envolvida em try/catch que loga erro e
   segue. O app continua funcionando; o relatório de fiado marca os clientes afetados com
-  `TemPagamentoNaoAlocado` (§4.3).
+  `TemDivergenciaDeSaldo` (§4.3).
 - Log de bootstrap: início, fim e o resumo — mesmo padrão de `LogsDoBootstrap`.
 
 #### 4.0.6 Efeito no dashboard
@@ -257,7 +257,7 @@ O lucro reconhecido exclui vendas fiado ainda em aberto e inclui fiado já quita
   `Status == FiadoAberto`** por cliente. Uma venda parcialmente paga e ainda aberta entra pelo
   seu saldo real.
 - O legado é **normalizado** (§4.0.5), então não há limitação de aging por dado ausente. O
-  `TemPagamentoNaoAlocado` continua existindo como **detector de divergência**: se a
+  `TemDivergenciaDeSaldo` continua existindo como **detector de divergência**: se a
   reconciliação do bootstrap registrou que `sum(SaldoFiado) != Cliente.SaldoDevedor` para o
   cliente, a linha vem marcada e a tela mostra "saldo do cadastro difere das vendas".
 - Faixas: 0–30, 31–60, 61–90, 90+ dias.
