@@ -20,11 +20,38 @@ public class NormalizacaoFiadoBootstrapTests(DatabaseFixture fixture) : IClassFi
     public Task DisposeAsync() => Task.CompletedTask;
 
     /// <summary>
+    /// Prepara o "primeiro boot" de forma determinística: reseta o banco e remove o marcador da
+    /// normalização.
+    /// </summary>
+    /// <remarks>
+    /// O marcador é global (<c>RegistrosAuditoria</c> sem filtro) e idempotente por natureza: com
+    /// ele presente, <c>ExecutarAsync</c> retorna sem tocar nada. Ele chega aqui por dois caminhos
+    /// fora do controle do teste — o <see cref="DatabaseFixture"/> sobe o <b>AppHost inteiro</b>
+    /// (o processo <c>RevendaApp.Web</c> roda o próprio bootstrap, que já normaliza e grava o
+    /// marcador), e uma execução anterior da classe também o deixa. Por isso a remoção é explícita
+    /// e imediatamente antes da chamada, em vez de depender só do reset.
+    /// </remarks>
+    private async Task PrepararAsync()
+    {
+        await fixture.ResetDatabaseAsync();
+        await LimparMarcadorAsync();
+    }
+
+    private async Task LimparMarcadorAsync()
+    {
+        using var central = fixture.CreateDbContextCentral();
+        await central.Database.ExecuteSqlRawAsync(
+            """DELETE FROM "RegistrosAuditoria" WHERE "Acao" = {0}""",
+            RegistroAuditoria.Acoes.FiadoLegadoNormalizado);
+    }
+
+    /// <summary>
     /// Cria cliente + vendas fiado + pagamentos de abatimento (VendaId null) numa empresa,
     /// replicando o estado que o banco legado tinha: saldo do cliente reduzido pelos pagamentos,
     /// mas nenhuma venda sabendo quanto foi pago.
     /// </summary>
-    private async Task<Guid> CriarCenarioAsync(Guid empresaId, decimal[] valoresFiado, decimal[] pagamentos)
+    private async Task<(Guid ClienteId, IReadOnlyList<Guid> VendaIds)> CriarCenarioAsync(
+        Guid empresaId, decimal[] valoresFiado, decimal[] pagamentos)
     {
         await using var db = fixture.CreateDbContext(empresaId);
 
@@ -37,12 +64,14 @@ public class NormalizacaoFiadoBootstrapTests(DatabaseFixture fixture) : IClassFi
         db.Produtos.Add(produto);
         await db.SaveChangesAsync();
 
+        var vendaIds = new List<Guid>(valoresFiado.Length);
         var dia = 1;
         foreach (var valor in valoresFiado)
         {
             var venda = new Venda(cliente.Id, FormaPagamento.Fiado, new DateTime(2026, 1, dia++, 10, 0, 0, DateTimeKind.Utc));
             venda.AdicionarItem(produto.Id, 1, valor, valor / 2);
             db.Vendas.Add(venda);
+            vendaIds.Add(venda.Id);
             cliente.AdicionarSaldoDevedor(valor);
         }
 
@@ -55,19 +84,20 @@ public class NormalizacaoFiadoBootstrapTests(DatabaseFixture fixture) : IClassFi
         }
 
         await db.SaveChangesAsync();
-        return cliente.Id;
+        return (cliente.Id, vendaIds);
     }
 
     [Fact]
     public async Task Normalizacao_corrige_banco_legado_contra_Postgres()
     {
+        await PrepararAsync();
         var empresaA = TenantIntegracao.EmpresaId;
         var empresaB = (await CriarEmpresaAsync()).Id;
 
         // Empresa A: vendas de 60 e 40 com 70 pagos → a antiga quita, a nova recebe 10.
-        await CriarCenarioAsync(empresaA, [60m, 40m], [70m]);
+        var (_, vendasA) = await CriarCenarioAsync(empresaA, [60m, 40m], [70m]);
         // Empresa B: venda de 30 com 10 pagos → prova que a passada não parou na primeira empresa.
-        await CriarCenarioAsync(empresaB, [30m], [10m]);
+        var (_, vendasB) = await CriarCenarioAsync(empresaB, [30m], [10m]);
 
         using (var central = fixture.CreateDbContextCentral())
         {
@@ -75,17 +105,20 @@ public class NormalizacaoFiadoBootstrapTests(DatabaseFixture fixture) : IClassFi
                 central, id => fixture.CreateDbContext(id), CancellationToken.None);
         }
 
+        // Asserts pelos Ids criados, não por índice: se outra classe deixar vendas na empresa
+        // padrão (o volume do Postgres é persistente), a posição na lista mudaria.
         await using (var dbA = fixture.CreateDbContext(empresaA))
         {
-            var vendas = await dbA.Vendas.Include(v => v.Itens).OrderBy(v => v.DataHora).ToListAsync();
-            Assert.Equal(VendaStatus.FiadoQuitado, vendas[0].Status);
-            Assert.Equal(10m, vendas[1].ValorPagoFiado);
-            Assert.Equal(VendaStatus.FiadoAberto, vendas[1].Status);
+            var antiga = await dbA.Vendas.Include(v => v.Itens).SingleAsync(v => v.Id == vendasA[0]);
+            var nova = await dbA.Vendas.Include(v => v.Itens).SingleAsync(v => v.Id == vendasA[1]);
+            Assert.Equal(VendaStatus.FiadoQuitado, antiga.Status);
+            Assert.Equal(10m, nova.ValorPagoFiado);
+            Assert.Equal(VendaStatus.FiadoAberto, nova.Status);
         }
 
         await using (var dbB = fixture.CreateDbContext(empresaB))
         {
-            var venda = await dbB.Vendas.Include(v => v.Itens).SingleAsync();
+            var venda = await dbB.Vendas.Include(v => v.Itens).SingleAsync(v => v.Id == vendasB[0]);
             Assert.Equal(10m, venda.ValorPagoFiado);
         }
 
@@ -105,6 +138,7 @@ public class NormalizacaoFiadoBootstrapTests(DatabaseFixture fixture) : IClassFi
     [Fact]
     public async Task Normalizacao_abre_um_contexto_por_empresa_com_o_id_correto()
     {
+        await PrepararAsync();
         var empresaA = TenantIntegracao.EmpresaId;
         var empresaB = (await CriarEmpresaAsync()).Id;
         await CriarCenarioAsync(empresaA, [60m], [10m]);

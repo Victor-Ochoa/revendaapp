@@ -15,7 +15,9 @@ public class HistoricoEstoqueConfiguration : IEntityTypeConfiguration<HistoricoE
         builder.Property(h => h.Id).ValueGeneratedNever();
 
         builder.Property(h => h.EmpresaId).IsRequired();
-        builder.HasIndex(h => h.EmpresaId);
+        // Índice composto para os relatórios mensais: filtra por empresa e período. Substitui o
+        // índice simples de EmpresaId — o composto cobre o prefixo.
+        builder.HasIndex(h => new { h.EmpresaId, h.Data });
 
         builder.Property(h => h.Tipo).HasConversion<string>().HasMaxLength(30);
         builder.Property(h => h.Descricao).HasMaxLength(500);

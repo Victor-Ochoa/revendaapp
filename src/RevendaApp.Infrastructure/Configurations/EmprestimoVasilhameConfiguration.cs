@@ -15,7 +15,9 @@ public class EmprestimoVasilhameConfiguration : IEntityTypeConfiguration<Emprest
         builder.Property(e => e.Id).ValueGeneratedNever();
 
         builder.Property(e => e.EmpresaId).IsRequired();
-        builder.HasIndex(e => e.EmpresaId);
+        // Índice composto para os relatórios mensais: filtra por empresa e devolução (em aberto vs.
+        // devolvido). Substitui o índice simples de EmpresaId — o composto cobre o prefixo.
+        builder.HasIndex(e => new { e.EmpresaId, e.DevolvidoEm });
 
         builder.Property(e => e.Quantidade).IsRequired();
         builder.Property(e => e.Data).IsRequired();

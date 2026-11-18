@@ -15,7 +15,9 @@ public class MovimentacaoEstoqueConfiguration : IEntityTypeConfiguration<Movimen
         builder.Property(m => m.Id).ValueGeneratedNever();
 
         builder.Property(m => m.EmpresaId).IsRequired();
-        builder.HasIndex(m => m.EmpresaId);
+        // Índice composto para os relatórios mensais: filtra por empresa e período. Substitui o
+        // índice simples de EmpresaId — o composto cobre o prefixo.
+        builder.HasIndex(m => new { m.EmpresaId, m.Data });
 
         builder.Property(m => m.Tipo).HasConversion<string>().HasMaxLength(20);
         builder.Property(m => m.Motivo).HasMaxLength(300);

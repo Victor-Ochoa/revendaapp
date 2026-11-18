@@ -301,13 +301,13 @@ namespace RevendaApp.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("EmpresaId");
-
                     b.HasIndex("ProdutoId");
 
                     b.HasIndex("VendaId");
 
                     b.HasIndex("ClienteId", "ProdutoId");
+
+                    b.HasIndex("EmpresaId", "DevolvidoEm");
 
                     b.ToTable("EmprestimosVasilhames", (string)null);
                 });
@@ -352,9 +352,9 @@ namespace RevendaApp.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("EmpresaId");
-
                     b.HasIndex("ProdutoId");
+
+                    b.HasIndex("EmpresaId", "Data");
 
                     b.ToTable("HistoricosEstoque", (string)null);
                 });
@@ -430,9 +430,9 @@ namespace RevendaApp.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("EmpresaId");
-
                     b.HasIndex("ProdutoId");
+
+                    b.HasIndex("EmpresaId", "Data");
 
                     b.ToTable("MovimentacoesEstoque", (string)null);
                 });
