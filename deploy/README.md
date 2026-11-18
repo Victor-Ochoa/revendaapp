@@ -114,6 +114,60 @@ O seed do admin é idempotente (`FindByEmailAsync`). Se o `seed-admin-password` 
 primeiro boot, o admin **não** será recriado — altere a senha via SQL na VM ou esvazie o volume.
 Mudar as variáveis apenas no deploy subsequente não troca credenciais já gravadas.
 
+## Backup e restauração do Postgres de produção
+
+O Postgres roda como container (`revendaappapphost-postgres-1`) com volume persistente. **Antes de
+qualquer deploy que mude dados no bootstrap** — migração, normalização, backfill — tire um dump.
+
+Motivo concreto: a normalização do fiado legado (`NormalizarFiadoLegado`) roda no primeiro boot e
+**grava** `Venda.ValorPagoFiado` em todas as vendas fiado. O rollback da migração não desfaz isso.
+
+```bash
+# 1. Dump completo (custom format, comprimido) no disco da VM
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+ssh -i ~/.ssh/mgc ubuntu@201.23.87.110 \
+  'docker exec revendaappapphost-postgres-1 sh -c '\''PGPASSWORD="$POSTGRES_PASSWORD" \
+   pg_dump -U postgres -d revendaapp --format=custom --compress=9'\''' \
+  > ~/backups/revendaapp-$TS.dump
+
+# 2. Traga para fora da VM (backup que só existe no host que ele protege não é backup)
+scp -i ~/.ssh/mgc ubuntu@201.23.87.110:~/backups/revendaapp-$TS.dump ~/backups/
+sha256sum ~/backups/revendaapp-$TS.dump
+```
+
+A senha vem do env do próprio container — não precisa digitá-la nem passá-la na linha de comando
+(onde ficaria no histórico e no `ps`).
+
+**Verifique o dump antes de confiar nele.** Restaure num banco descartável e compare as contagens:
+
+```bash
+PG='docker exec -i revendaappapphost-postgres-1'
+$PG sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -U postgres -d postgres \
+           -c "CREATE DATABASE revendaapp_verif;"'
+$PG sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_restore -U postgres -d revendaapp_verif \
+           --no-owner --no-privileges' < ~/backups/revendaapp-$TS.dump
+# compare Vendas, Clientes, Pagamentos, ItensVenda, saldo_total etc. entre os dois bancos
+$PG sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -U postgres -d postgres \
+           -c "DROP DATABASE revendaapp_verif;"'
+```
+
+**Restauração de verdade** (para o banco em uso — derruba o app):
+
+```bash
+docker stop revendaappapphost-web-1
+$PG sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" dropdb -U postgres --force revendaapp'
+$PG sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" createdb -U postgres revendaapp'
+$PG sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" pg_restore -U postgres -d revendaapp \
+           --no-owner --no-privileges' < ~/backups/revendaapp-$TS.dump
+docker start revendaappapphost-web-1
+```
+
+Cuidado: ao subir de novo, o bootstrap roda a normalização outra vez se o marcador em
+`RegistrosAuditoria` (`Acao = 'FiadoLegadoNormalizado'`) não estiver no dump restaurado. Ela é
+idempotente (replay determinístico a partir do histórico), então rodar de novo é seguro — mas o
+estado final precisa ser conferido no log do bootstrap, que imprime clientes analisados, vendas
+normalizadas e divergências.
+
 ## Referências
 - `aspire deploy` reference: https://github.com/davidfowl/aspire-ssh-deploy
 - Exemplo replicado: `/home/voch_silva/dev/flyve/CapZeroApp` (docs/deploy-https.md)
