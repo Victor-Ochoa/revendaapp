@@ -1,0 +1,143 @@
+@page "/relatorios/vasilhames"
+@attribute [Authorize(Policy = RevendaApp.Web.Common.Authorization.Politicas.ApenasEmpresa)]
+@rendermode InteractiveServer
+@using Mediator
+@using RevendaApp.Web.Common
+@using RevendaApp.Web.Common.Relatorios
+@using RevendaApp.Web.Features.Relatorios.Shell
+@using RevendaApp.Web.Features.Relatorios.Vasilhames
+@inject ISender Sender
+
+<PageTitle>Vasilhames</PageTitle>
+
+<RelatorioShell Titulo="Vasilhames"
+                Descricao="Vasilhames na rua por cliente e produto, e devoluções do mês."
+                Mes="_periodo.Mes"
+                Ano="_periodo.Ano"
+                OnPeriodoAlterado="TrocarPeriodoAsync">
+    @if (_resultado is null)
+    {
+        <MudProgressCircular Indeterminate="true" />
+    }
+    else
+    {
+        <MudGrid Class="mb-4">
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Emprestados no mês</MudText>
+                    <MudText Typo="Typo.h5">@_resultado.TotalEmprestadoNoMes</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Devolvidos no mês</MudText>
+                    <MudText Typo="Typo.h5">@_resultado.TotalDevolvidoNoMes</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Em aberto (na rua)</MudText>
+                    <MudText Typo="Typo.h5">@_emAbertoTotal</MudText>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <MudPaper Class="pa-4 mb-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Por produto</MudText>
+            @if (_resultado.PorProduto.Count == 0)
+            {
+                <MudText>Nenhum produto controla vasilhame.</MudText>
+            }
+            else
+            {
+                <MudTable Items="_resultado.PorProduto" Dense="true" Hover="true">
+                    <HeaderContent>
+                        <MudTh>Produto</MudTh>
+                        <MudTh Style="text-align:right">Emprestados no mês</MudTh>
+                        <MudTh Style="text-align:right">Devolvidos no mês</MudTh>
+                        <MudTh Style="text-align:right">Em aberto</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Produto">@context.Nome</MudTd>
+                        <MudTd DataLabel="Emprestados" Style="text-align:right">@context.EmprestadosNoMes</MudTd>
+                        <MudTd DataLabel="Devolvidos" Style="text-align:right">@context.DevolvidosNoMes</MudTd>
+                        <MudTd DataLabel="Em aberto" Style="text-align:right">@context.EmAberto</MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        </MudPaper>
+
+        <MudPaper Class="pa-4 mb-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Com quem está</MudText>
+            @if (_resultado.EmAberto.Count == 0)
+            {
+                <MudText>Nenhum vasilhame em poder de clientes.</MudText>
+            }
+            else
+            {
+                <MudTable Items="_resultado.EmAberto" Dense="true" Hover="true">
+                    <HeaderContent>
+                        <MudTh>Cliente</MudTh>
+                        <MudTh>Produto</MudTh>
+                        <MudTh Style="text-align:right">Saldo</MudTh>
+                        <MudTh>Desde</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Cliente">@context.ClienteNome</MudTd>
+                        <MudTd DataLabel="Produto">@context.ProdutoNome</MudTd>
+                        <MudTd DataLabel="Saldo" Style="text-align:right">@context.Saldo</MudTd>
+                        <MudTd DataLabel="Desde">
+                            @BrasilTimeZone.ParaBrasilia(context.DataMaisAntiga).ToString("dd/MM/yyyy")
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        </MudPaper>
+
+        <MudPaper Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Devoluções por dia</MudText>
+            @if (_resultado.TotalDevolvidoNoMes == 0)
+            {
+                <MudText>Nenhuma devolução neste mês.</MudText>
+            }
+            else
+            {
+                <MudChart T="double" ChartType="ChartType.Line" ChartSeries="_serieDevolucoes" ChartLabels="_rotulosDias"
+                          Width="100%" Height="280px" />
+            }
+        </MudPaper>
+    }
+</RelatorioShell>
+
+@code {
+    private PeriodoMes _periodo = PeriodoMes.DoDia(DateTime.UtcNow);
+    private RelatorioVasilhamesResult? _resultado;
+
+    private List<ChartSeries<double>> _serieDevolucoes = [];
+    private string[] _rotulosDias = [];
+    private int _emAbertoTotal;
+
+    protected override Task OnInitializedAsync() => CarregarAsync();
+
+    private async Task TrocarPeriodoAsync(PeriodoMes periodo)
+    {
+        _periodo = periodo;
+        await CarregarAsync();
+    }
+
+    private async Task CarregarAsync()
+    {
+        _resultado = await Sender.Send(new ObterRelatorioVasilhamesQuery(_periodo));
+        _emAbertoTotal = _resultado.EmAberto.Sum(e => e.Saldo);
+
+        _rotulosDias = _resultado.DevolucoesPorDia.Select(d => d.Dia.ToString()).ToArray();
+        _serieDevolucoes =
+        [
+            new ChartSeries<double>
+            {
+                Name = "Devolvidos",
+                Data = _resultado.DevolucoesPorDia.Select(d => (double)d.Quantidade).ToArray(),
+            },
+        ];
+    }
+}
