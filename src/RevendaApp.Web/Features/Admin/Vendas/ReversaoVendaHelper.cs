@@ -96,9 +96,14 @@ public static class ReversaoVendaHelper
         if (venda.FormaPagamento == FormaPagamento.Fiado)
         {
             var cliente = await db.Clientes.FindAsync([venda.ClienteId], cancellationToken);
-            if (cliente is not null)
+            if (cliente is not null && venda.SaldoFiado > 0m)
             {
-                cliente.RegistrarPagamento(venda.ValorTotal);
+                // Estorna apenas o que a venda ainda devia: se houve pagamento parcial já alocado,
+                // devolver o ValorTotal inteiro criaria crédito que o cliente nunca pagou (e o
+                // clamp em zero de RegistrarPagamento esconderia o erro quando ele não tivesse
+                // outra dívida). Venda já quitada tem SaldoFiado == 0 e RegistrarPagamento lança
+                // com valor <= 0.
+                cliente.RegistrarPagamento(venda.SaldoFiado);
             }
         }
         else

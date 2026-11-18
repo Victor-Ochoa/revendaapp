@@ -216,19 +216,41 @@ public class ExcluirVendaCommandHandlerTests
     }
 
     [Fact]
-    public async Task Handle_DeveBloquearExclusao_QuandoSaldoFiadoNaoCobreValor()
+    public async Task Handle_DeveBloquearExclusao_QuandoFiadoJaTevePagamentoParcial()
     {
+        // Excluir devolveria só o SaldoFiado (160), deixando os 40 recebidos órfãos: o dinheiro
+        // entrou, mas a venda que o justificava sumiria do histórico.
         var (db, cliente, _, venda) = await CriarVendaAsync(forma: FormaPagamento.Fiado, quantidade: 2); // 200 fiado
-        // Simula saldo já reduzido (cliente pagou parte): saldo 50 < 200.
-        cliente.RegistrarPagamento(150m);
+        venda.AbaterFiado(40m);
+        cliente.RegistrarPagamento(40m);
         await db.SaveChangesAsync();
 
         var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var excecao = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None).AsTask());
 
-        // Nada mudou: venda segue ativa.
+        Assert.Contains("já teve pagamento", excecao.Message);
+
+        // Nada mudou: venda segue ativa e o saldo do cliente intacto.
+        Assert.Null((await db.Vendas.FindAsync(venda.Id))!.ExcluidaEm);
+        Assert.Equal(160m, (await db.Clientes.FindAsync(cliente.Id))!.SaldoDevedor);
+    }
+
+    [Fact]
+    public async Task Handle_DeveBloquearExclusao_QuandoFiadoJaQuitado()
+    {
+        var (db, cliente, _, venda) = await CriarVendaAsync(forma: FormaPagamento.Fiado, quantidade: 2); // 200 fiado
+        venda.AbaterFiado(200m);
+        cliente.RegistrarPagamento(200m);
+        await db.SaveChangesAsync();
+
+        var handler = new ExcluirVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+
+        var excecao = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            handler.Handle(new ExcluirVendaCommand(venda.Id), CancellationToken.None).AsTask());
+
+        Assert.Contains("já teve pagamento", excecao.Message);
         Assert.Null((await db.Vendas.FindAsync(venda.Id))!.ExcluidaEm);
     }
 

@@ -109,24 +109,47 @@ public class EditarVendaCommandHandlerTests
     }
 
     [Fact]
-    public async Task Handle_RegraFiado_DeveBloquear_QuandoSaldoNaoCobreValor()
+    public async Task Edicao_de_venda_fiado_com_pagamento_parcial_e_bloqueada()
     {
-        // Fiado quitado: cliente tem saldo que não cobre (já pagou).
-        var (db, _, produto, venda) = await CriarVendaAsync(forma: FormaPagamento.Fiado, quantidade: 2); // 200 fiado
-        var cliente = await db.Clientes.FindAsync(db.Clientes.First().Id);
-
-        // Simula cliente que já quitou a dívida (saldo menor que o valor).
-        db.Attach(cliente!);
-        cliente!.RegistrarPagamento(150m); // saldo 50 < 200
+        // Venda fiado 200 com 40 já alocados: reverter só o SaldoFiado (160) e recriar somaria 200
+        // ao saldo — o cliente passaria a dever 40 a mais do que devia, e o pagamento sumiria.
+        var (db, cliente, produto, venda) = await CriarVendaAsync(forma: FormaPagamento.Fiado, quantidade: 2);
+        venda.AbaterFiado(40m);
+        cliente.RegistrarPagamento(40m);
         await db.SaveChangesAsync();
 
         var handler = new EditarVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        var excecao = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             handler.Handle(
                 new EditarVendaCommand(venda.Id, FormaPagamento.Fiado, 0m,
                     [new ItemVendaInput(produto.Id, 1)]),
                 CancellationToken.None).AsTask());
+
+        Assert.Contains("já teve pagamento", excecao.Message);
+
+        // Nada foi tocado: a venda antiga segue ativa e o saldo do cliente intacto.
+        Assert.Null((await db.Vendas.FindAsync(venda.Id))!.ExcluidaEm);
+        Assert.Equal(160m, (await db.Clientes.FindAsync(cliente.Id))!.SaldoDevedor);
+    }
+
+    [Fact]
+    public async Task Edicao_de_venda_fiado_quitada_e_bloqueada()
+    {
+        var (db, cliente, produto, venda) = await CriarVendaAsync(forma: FormaPagamento.Fiado, quantidade: 2); // 200 fiado
+        venda.AbaterFiado(200m);
+        cliente.RegistrarPagamento(200m);
+        await db.SaveChangesAsync();
+
+        var handler = new EditarVendaCommandHandler(db, TenantTeste.Contexto(), TimeProvider.System, usuarioAutenticado: new FakeUsuarioAutenticado(ehAdmin: true));
+
+        var excecao = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            handler.Handle(
+                new EditarVendaCommand(venda.Id, FormaPagamento.Fiado, 0m,
+                    [new ItemVendaInput(produto.Id, 1)]),
+                CancellationToken.None).AsTask());
+
+        Assert.Contains("já teve pagamento", excecao.Message);
     }
 
     [Fact]

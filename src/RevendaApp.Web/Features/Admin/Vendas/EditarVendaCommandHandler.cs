@@ -53,13 +53,13 @@ public sealed class EditarVendaCommandHandler(
 
         var cliente = venda.Cliente!;
 
-        // Regra fiado: só é editável se o saldo devedor do cliente cobre a venda anterior
-        // (ainda em aberto). Se quitada/saldo insuficiente → bloqueia.
-        if (venda.FormaPagamento == FormaPagamento.Fiado
-            && cliente.SaldoDevedor < venda.ValorTotal)
+        // Fiado com QUALQUER valor já pago não pode ser revertido: o estorno abate só o SaldoFiado e
+        // a recriação somaria o ValorTotal cheio, fazendo o saldo do cliente aumentar pelo valor que
+        // ele já pagou. Editar venda quitada tem o mesmo problema.
+        if (venda.FormaPagamento == FormaPagamento.Fiado && venda.ValorPagoFiado > 0m)
         {
             throw new InvalidOperationException(
-                "Não é possível editar: o saldo devedor do cliente não cobre o valor desta venda fiado (já quitada).");
+                "Não é possível editar: esta venda fiado já teve pagamento e o estorno não devolveria o valor recebido.");
         }
 
         // Marca a venda antiga como excluída ANTES de re-criar, para que as queries (que filtram
