@@ -183,6 +183,28 @@ public class ObterDashboardQueryHandlerTests
     }
 
     [Fact]
+    public async Task Handle_DeveReconhecerLucroProporcionalDeFiadoParcialmentePago()
+    {
+        var (db, cliente, produto, _) = await CriarBaseAsync();
+
+        // Venda fiado 100, custo 60 (lucro 40), com 50 já alocados: metade do lucro é reconhecida.
+        // Antes da quitação parcial por venda o fiado era tudo-ou-nada e esse lucro nunca aparecia.
+        var vendaFiado = new Venda(cliente.Id, FormaPagamento.Fiado, new DateTime(2026, 9, 15, 12, 0, 0, DateTimeKind.Utc));
+        vendaFiado.AdicionarItem(produto.Id, 1, 100m, 60m);
+        vendaFiado.AbaterFiado(50m);
+
+        db.Vendas.Add(vendaFiado);
+        await db.SaveChangesAsync();
+
+        var handler = CriarHandler(db, FixedNow);
+        var result = await handler.Handle(new ObterDashboardQuery(PeriodoDashboard.Hoje), CancellationToken.None);
+
+        Assert.Equal(100m, result.VendasTotal);
+        Assert.Equal(20m, result.LucroTotal);
+        Assert.Equal(20m, Assert.Single(result.VendasPorPeriodo).Lucro);
+    }
+
+    [Fact]
     public async Task Handle_DeveCalcularTotalDevedor_ComoSomaDosSaldosDosClientes()
     {
         var (db, cliente, produto, _) = await CriarBaseAsync();

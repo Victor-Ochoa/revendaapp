@@ -35,14 +35,10 @@ public sealed class ObterDashboardQueryHandler(AppDbContext db, ITenantContext t
                         && (query.Periodo == PeriodoDashboard.Tudo || v.DataHora >= inicio))
             .ToListAsync(cancellationToken);
 
-        // Venda fiado é contabilizada como venda, mas seu lucro só é reconhecido quando o
-        // saldo devedor é pago. Por isso o lucro de vendas fiado ainda em aberto é excluído dos
-        // lucros; vendas fiado já quitadas (Status == FiadoQuitado) entram no lucro (o total de
-        // vendas sempre conta com o fiado).
-        var lucroReconhecido = (IEnumerable<Venda> vendas) =>
-            vendas
-                .Where(v => v.FormaPagamento != FormaPagamento.Fiado || v.Status == VendaStatus.FiadoQuitado)
-                .Sum(v => v.LucroTotal);
+        // Venda fiado é contabilizada como venda, mas seu lucro é reconhecido na proporção do que
+        // já foi pago (integral quando quitada). A regra vive em VendaLucro para o dashboard e os
+        // relatórios não divergirem.
+        var lucroReconhecido = (IEnumerable<Venda> vendas) => VendaLucro.Reconhecido(vendas);
 
         var totalDevedor = await db.Clientes.AsNoTracking().SumAsync(c => c.SaldoDevedor, cancellationToken);
 
@@ -223,11 +219,8 @@ public sealed class ObterDashboardQueryHandler(AppDbContext db, ITenantContext t
             or PeriodoDashboard.Ultimas24Horas
             or PeriodoDashboard.Hoje;
 
-        // O lucro de vendas fiado ainda em aberto não é reconhecido no gráfico.
-        static decimal LucroReconhecido(IEnumerable<Venda> vs) =>
-            vs
-                .Where(v => v.FormaPagamento != FormaPagamento.Fiado || v.Status == VendaStatus.FiadoQuitado)
-                .Sum(v => v.LucroTotal);
+        // O lucro de fiado segue a mesma regra proporcional do total do período (VendaLucro).
+        static decimal LucroReconhecido(IEnumerable<Venda> vs) => VendaLucro.Reconhecido(vs);
 
         if (porHora)
         {
