@@ -10,15 +10,19 @@
         </div>
         <MudSpacer />
         <MudSelect T="int" Label="Mês" Value="Mes" ValueChanged="OnMesChangedAsync" Dense="true" Style="max-width: 160px;">
+            @* A cópia local é obrigatória: o RenderFragment do item é avaliado DEPOIS do laço, então
+               usar `m` direto faria todos os itens verem o valor final (13) e estourar o DateTime. *@
             @for (var m = 1; m <= 12; m++)
             {
-                <MudSelectItem T="int" Value="@m">@NomeMes(m)</MudSelectItem>
+                var mesDoItem = m;
+                <MudSelectItem T="int" Value="@mesDoItem">@NomeMes(mesDoItem)</MudSelectItem>
             }
         </MudSelect>
         <MudSelect T="int" Label="Ano" Value="Ano" ValueChanged="OnAnoChangedAsync" Dense="true" Style="max-width: 120px;">
             @for (var a = DateTime.Now.Year; a >= DateTime.Now.Year - 4; a--)
             {
-                <MudSelectItem T="int" Value="@a">@a</MudSelectItem>
+                var anoDoItem = a;
+                <MudSelectItem T="int" Value="@anoDoItem">@anoDoItem</MudSelectItem>
             }
         </MudSelect>
     </div>

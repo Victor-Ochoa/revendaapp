@@ -65,9 +65,13 @@
                     <MudTable Items="_resultado.Produtos" Dense="true" Hover="true" Breakpoint="Breakpoint.None">
                         <HeaderContent>
                             <MudTh>Produto</MudTh>
+                            @* A cópia local é obrigatória: o RenderFragment do MudTh/MudTd é avaliado
+                               DEPOIS do laço, então `dia` direto chegaria ao fim do range (DiasNoMes+1)
+                               e estouraria o índice em CelulaDoDia. *@
                             @for (var dia = 1; dia <= _resultado.Periodo.DiasNoMes; dia++)
                             {
-                                <MudTh Style="text-align:center">@dia</MudTh>
+                                var diaDoCabecalho = dia;
+                                <MudTh Style="text-align:center">@diaDoCabecalho</MudTh>
                             }
                             <MudTh Style="text-align:right">Entradas</MudTh>
                             <MudTh Style="text-align:right">Saídas</MudTh>
@@ -85,7 +89,8 @@
                             </MudTd>
                             @for (var dia = 1; dia <= _resultado.Periodo.DiasNoMes; dia++)
                             {
-                                <MudTd Style="text-align:center">@CelulaDoDia(context, dia)</MudTd>
+                                var diaDaCelula = dia;
+                                <MudTd Style="text-align:center">@CelulaDoDia(context, diaDaCelula)</MudTd>
                             }
                             <MudTd Style="text-align:right">@context.TotalEntradas</MudTd>
                             <MudTd Style="text-align:right">@context.TotalSaidas</MudTd>
