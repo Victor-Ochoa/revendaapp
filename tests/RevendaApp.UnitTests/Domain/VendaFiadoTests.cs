@@ -103,6 +103,29 @@ public class VendaFiadoTests
     }
 
     [Fact]
+    public void DefinirValorPagoFiado_sobrescreve_e_e_idempotente()
+    {
+        var venda = VendaFiado(100m);
+
+        venda.DefinirValorPagoFiado(40m);
+        venda.DefinirValorPagoFiado(40m);
+
+        Assert.Equal(40m, venda.ValorPagoFiado);
+        Assert.Equal(VendaStatus.FiadoAberto, venda.Status);
+    }
+
+    [Fact]
+    public void DefinirValorPagoFiado_acima_do_total_quita_sem_estourar()
+    {
+        var venda = VendaFiado(100m);
+
+        venda.DefinirValorPagoFiado(150m);
+
+        Assert.Equal(100m, venda.ValorPagoFiado);
+        Assert.Equal(VendaStatus.FiadoQuitado, venda.Status);
+    }
+
+    [Fact]
     public void MarcarFiadoQuitado_equivale_a_abater_o_saldo_restante()
     {
         var venda = VendaFiado(100m);

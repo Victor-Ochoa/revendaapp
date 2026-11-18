@@ -67,6 +67,9 @@ public class RegistroAuditoria
 
         /// <summary>O super admin encerrou a impersonation e voltou à central.</summary>
         public const string VoltarCentral = "VoltarCentral";
+
+        /// <summary>Normalização única da quitação de fiado legado, executada no bootstrap.</summary>
+        public const string FiadoLegadoNormalizado = "FiadoLegadoNormalizado";
     }
 
     /// <summary>Origem do registro: de onde a ação partiu.</summary>
@@ -77,6 +80,9 @@ public class RegistroAuditoria
 
         /// <summary>Ação executada pela central do super admin.</summary>
         public const string Central = "Central";
+
+        /// <summary>Ação executada pelo próprio sistema no bootstrap (sem usuário).</summary>
+        public const string Sistema = "Sistema";
     }
 
     public Guid Id { get; private set; }
