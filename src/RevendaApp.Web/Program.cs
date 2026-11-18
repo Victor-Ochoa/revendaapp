@@ -24,6 +24,7 @@ using RevendaApp.Web.Components;
 using RevendaApp.Web.Features.Auth;
 using RevendaApp.Web.Features.Auth.Login;
 using RevendaApp.Web.Features.ConfiguracaoEmpresa;
+using RevendaApp.Web.Features.Fiado.Normalizacao;
 using RevendaApp.Web.Features.Seed;
 using RevendaApp.Web.Features.Usuarios.Cadastrar;
 
@@ -239,6 +240,38 @@ using (var scope = app.Services.CreateScope())
     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await dbContext.Database.MigrateAsync();
 
+    // Contexto tenant-bound para trabalho de bootstrap: o AppDbContext da DI resolve em modo
+    // central (sem empresa) e o interceptor lança ao gravar domínio. Usado pela normalização do
+    // fiado legado e pelo seed de demonstração. As opções são montadas aqui (mesma connection
+    // string do Aspire) em vez de reaproveitar as opções da DI: elas já carregam o interceptor do
+    // tenant central, que lançaria EmpresaIdRequerida ao gravar domínio.
+    AppDbContext CriarContextoDaEmpresa(Guid empresaId)
+    {
+        var tenant = new TenantFixo(empresaId);
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseNpgsql(app.Configuration.GetConnectionString("revendaapp"))
+            .AddInterceptors(new SetEmpresaIdInterceptor(tenant))
+            .Options;
+
+        return new AppDbContext(options, tenant);
+    }
+
+    // Normalização única da quitação de fiado legado. Deriva de histórico imutável, é idempotente
+    // e grava um marcador em RegistroAuditoria. Falha não derruba o bootstrap: o app continua
+    // servindo e o relatório de fiado sinaliza os clientes divergentes.
+    LogsDoBootstrap.NormalizandoFiadoLegado(bootstrapLogger);
+    try
+    {
+        var normalizacao = await NormalizarFiadoLegado.ExecutarAsync(
+            dbContext, CriarContextoDaEmpresa, CancellationToken.None);
+        LogsDoBootstrap.FiadoLegadoNormalizado(bootstrapLogger,
+            normalizacao.ClientesAnalisados, normalizacao.VendasNormalizadas, normalizacao.Divergencias);
+    }
+    catch (Exception ex)
+    {
+        LogsDoBootstrap.FalhaAoNormalizarFiadoLegado(bootstrapLogger, ex);
+    }
+
     var credentialsRequired = app.Environment.IsProduction();
     await SeedData.SeedDefaultAdminUserAsync(
         scope.ServiceProvider,
@@ -248,24 +281,6 @@ using (var scope = app.Services.CreateScope())
 
     if (app.Configuration.GetValue("Seed:EnableDemoData", !app.Environment.IsProduction()))
     {
-        // No startup não existe circuito Blazor, então o ITenantContext da DI resolve "sem
-        // empresa" (modo central) — semear com ele gravaria EmpresaId = Guid.Empty. O seed recebe
-        // uma fábrica de contextos com o tenant FIXO da empresa demo: o filtro global e o
-        // interceptor de EmpresaId passam a apontar para essa empresa.
-        // As opções são montadas aqui (mesma connection string do Aspire) em vez de reaproveitar as
-        // opções da DI: elas já carregam o interceptor do tenant central, que lançaria
-        // EmpresaIdRequerida ao gravar domínio.
-        AppDbContext CriarContextoDaEmpresa(Guid empresaId)
-        {
-            var tenant = new TenantFixo(empresaId);
-            var options = new DbContextOptionsBuilder<AppDbContext>()
-                .UseNpgsql(app.Configuration.GetConnectionString("revendaapp"))
-                .AddInterceptors(new SetEmpresaIdInterceptor(tenant))
-                .Options;
-
-            return new AppDbContext(options, tenant);
-        }
-
         await SeedDemoData.SeedAsync(
             dbContext,
             CriarContextoDaEmpresa,
@@ -322,4 +337,15 @@ internal static partial class LogsDoBootstrap
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Bootstrap concluído: migrações aplicadas e super admin verificado.")]
     public static partial void Concluido(ILogger logger);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Normalizando quitação de fiado legado...")]
+    public static partial void NormalizandoFiadoLegado(ILogger logger);
+
+    [LoggerMessage(Level = LogLevel.Information,
+        Message = "Fiado legado normalizado: {Clientes} clientes, {Vendas} vendas, {Divergencias} divergências.")]
+    public static partial void FiadoLegadoNormalizado(ILogger logger, int clientes, int vendas, int divergencias);
+
+    [LoggerMessage(Level = LogLevel.Error,
+        Message = "Falha ao normalizar a quitação de fiado legado; seguindo o bootstrap.")]
+    public static partial void FalhaAoNormalizarFiadoLegado(ILogger logger, Exception excecao);
 }
