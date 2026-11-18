@@ -357,6 +357,12 @@ public async Task Handle_PagamentoMaiorQueADivida_NaoDeveAlocarOExcedente()
 }
 ```
 
+**Atenção:** `RegistrarPagamentoCommandHandler` não tem validador de teto — `Cliente.RegistrarPagamento`
+faz `Math.Max(0m, ...)`, então pagar 150 sobre 100 já funciona hoje (o excedente vira 0 de saldo).
+O que muda é só a alocação: `AbaterFiado` devolve no máximo o saldo da venda, e o laço não aloca o
+resto em ninguém. Não introduza validação nova de "pagamento maior que a dívida" — é
+comportamento aceito hoje e está fora do escopo desta entrega.
+
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `dotnet test tests/RevendaApp.UnitTests --filter FullyQualifiedName~RegistrarPagamentoCommandHandlerTests`
@@ -443,20 +449,71 @@ public class ReversaoVendaFiadoTests
         // Estorna só o que ainda estava em aberto (60), não os 100 do total.
         Assert.Equal(0m, (await db.Clientes.FindAsync(cliente.Id))!.SaldoDevedor);
     }
+
+    [Fact]
+    public async Task Reversao_de_venda_quitada_nao_lanca_com_saldo_zero()
+    {
+        await using var db = InMemoryDbContextFactory.Create(TenantTeste.EmpresaId);
+        var cliente = new Cliente("Maria", "11988887777", "Rua A, 1");
+        db.Clientes.Add(cliente);
+        await db.SaveChangesAsync();
+
+        var venda = new Venda(cliente.Id, FormaPagamento.Fiado);
+        venda.AdicionarItem(Guid.NewGuid(), 1, 100m, 60m);
+        db.Vendas.Add(venda);
+        cliente.AdicionarSaldoDevedor(100m);
+        venda.AbaterFiado(100m);
+        cliente.RegistrarPagamento(100m);
+        await db.SaveChangesAsync();
+
+        // SaldoFiado == 0 → o helper não pode chamar RegistrarPagamento (lança com valor <= 0).
+        await ReversaoVendaHelper.ReverterAsync(db, venda, CancellationToken.None);
+        await db.SaveChangesAsync();
+
+        Assert.Equal(0m, (await db.Clientes.FindAsync(cliente.Id))!.SaldoDevedor);
+    }
 }
 ```
 
+**Regra da guarda — e por que NÃO é só `Status == FiadoQuitado`:**
+
+Uma venda fiado com **qualquer** pagamento alocado (`ValorPagoFiado > 0`) não pode ser editada
+nem excluída, mesmo ainda `FiadoAberto`. Motivo concreto: `EditarVendaCommandHandler` reverte a
+venda antiga e cria uma nova via `RegistrarAsync`. Se a reversão abatesse só o `SaldoFiado` e a
+nova venda somasse o `ValorTotal` cheio, o `SaldoDevedor` do cliente **aumentaria** pelo valor já
+pago — o pagamento do cliente sumiria. Carregar `ValorPagoFiado` para a nova venda seria a
+alternativa, mas cria um segundo caminho de escrita de pagamento e amplia o escopo sem
+necessidade. Excluir uma venda parcialmente paga tem o mesmo problema (o dinheiro recebido
+ficaria órfão). A regra preserva a intenção da guarda antiga (`SaldoDevedor < ValorTotal` ≈
+"esta venda já teve pagamento") sem os dois bugs dela.
+
+**Atenção ao estorno de venda não paga:** para venda fiado aberta **sem** nenhum pagamento,
+`SaldoFiado == ValorTotal` — o estorno é idêntico ao comportamento anterior. É o único caso que
+chega ao `ReversaoVendaHelper` pela via dos handlers (a guarda bloqueia o resto), mas o helper é
+`public` e chamado direto nos testes, então ele precisa tratar `SaldoFiado == 0` sem lançar:
+`Cliente.RegistrarPagamento` lança com `valor <= 0`.
+
 Em `EditarVendaCommandHandlerTests.cs`, substitua o teste que dependia de `SaldoDevedor < ValorTotal`
-por dois (use o helper de montagem que a classe já tem):
+por três (use o helper de montagem que a classe já tem):
 
 ```csharp
 [Fact]
-public async Task Edicao_de_venda_fiado_aberta_parcialmente_paga_e_permitida()
+public async Task Edicao_de_venda_fiado_aberta_sem_pagamento_e_permitida()
 {
-    // venda fiado 100, paga 40, ainda FiadoAberto
+    // venda fiado 100, ValorPagoFiado == 0 → pode editar
     var resultado = await handler.Handle(comandoEdicao, CancellationToken.None);
 
     Assert.True(resultado.Sucesso);
+}
+
+[Fact]
+public async Task Edicao_de_venda_fiado_com_pagamento_parcial_e_bloqueada()
+{
+    // venda fiado 100, AbaterFiado(40) → editar aumentaria o saldo do cliente em 40
+    var excecao = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        handler.Handle(comandoEdicao, CancellationToken.None).AsTask());
+
+    Assert.Contains("já teve pagamento", excecao.Message);
 }
 
 [Fact]
@@ -466,12 +523,14 @@ public async Task Edicao_de_venda_fiado_quitada_e_bloqueada()
     var excecao = await Assert.ThrowsAsync<InvalidOperationException>(() =>
         handler.Handle(comandoEdicao, CancellationToken.None).AsTask());
 
-    Assert.Contains("já foi quitada", excecao.Message);
+    Assert.Contains("já teve pagamento", excecao.Message);
 }
 ```
 
-O mesmo par de asserções vale para exclusão, em `ExcluirVendaCommandHandlerTests` (crie o arquivo
-se não existir, com o mesmo helper).
+O mesmo trio vale para exclusão, em `ExcluirVendaCommandHandlerTests` (crie o arquivo se não
+existir, com o mesmo helper). A mensagem é única nos dois handlers — use exatamente
+`"Não é possível editar: esta venda fiado já teve pagamento e o estorno não devolveria o valor recebido."`
+(com "excluir" no verbo do handler de exclusão), para o assert de `Contains` ser estável.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -485,22 +544,32 @@ Expected: FAIL — estorno devolve 100 (saldo vai a −40→0 por clamp) e a gua
 ```csharp
 // Estorna apenas o que a venda ainda devia: se houve pagamento parcial já alocado,
 // devolver o ValorTotal inteiro criaria crédito que o cliente nunca pagou.
-cliente.RegistrarPagamento(venda.SaldoFiado);
+// Venda já quitada tem SaldoFiado == 0 e RegistrarPagamento lança com valor <= 0.
+if (venda.SaldoFiado > 0m)
+{
+    cliente.RegistrarPagamento(venda.SaldoFiado);
+}
 ```
 
 Em `EditarVendaCommandHandler.cs:56-63` e `ExcluirVendaCommandHandler.cs:45-52`, a guarda passa a ser:
 
 ```csharp
-// Venda fiado já quitada teve o lucro reconhecido; desfazê-la exigiria estornar o pagamento,
-// o que o fluxo não faz. Fiado aberto — mesmo parcialmente pago — pode ser revertido.
-if (venda.FormaPagamento == FormaPagamento.Fiado && venda.Status == VendaStatus.FiadoQuitado)
+// Fiado com QUALQUER valor já pago não pode ser revertido: o estorno abate só o SaldoFiado e
+// a recriação somaria o ValorTotal cheio, fazendo o saldo do cliente aumentar pelo valor que
+// ele já pagou. Editar venda quitada tem o mesmo problema.
+if (venda.FormaPagamento == FormaPagamento.Fiado && venda.ValorPagoFiado > 0m)
 {
     throw new InvalidOperationException(
-        "Não é possível editar: esta venda fiado já foi quitada.");
+        "Não é possível editar: esta venda fiado já teve pagamento e o estorno não devolveria o valor recebido.");
 }
 ```
 
-(Ajuste o verbo da mensagem para "excluir" no handler de exclusão.) A variável `cliente` deixa de ser usada nessas guardas — remova a linha `var cliente = venda.Cliente!;` se ficar sem uso.
+(Ajuste o verbo da mensagem para "excluir" no handler de exclusão.)
+
+Em `ExcluirVendaCommandHandler`, `var cliente = venda.Cliente!;` (linha 43) fica **sem uso** —
+remova a linha e o `.Include(v => v.Cliente)` se nenhum outro trecho do handler o usar (confira
+antes: o handler não grava nada sobre o cliente). Em `EditarVendaCommandHandler`, `cliente` é
+usado depois (linhas 79, 104, 116-122) — mantenha.
 
 - [ ] **Step 4: Run the affected tests**
 
@@ -760,6 +829,16 @@ git commit -m "feat: adiciona coluna de valor pago fiado com backfill"
 
 ### Task 6: `NormalizarFiadoLegado` reconstrói a alocação antiga
 
+> **Restrição de tenancy que decide a assinatura:** o bootstrap roda com o `AppDbContext` da DI,
+> que em startup resolve **modo central** (`ITenantContext.EmpresaId == null`). Nesse modo o filtro
+> global não filtra e o `SetEmpresaIdInterceptor` **lança** em qualquer `Added` de entidade de
+> domínio — então a normalização **não pode** gravar via esse contexto. Por isso ela recebe uma
+> **fábrica de contextos por empresa** (`Func<Guid, AppDbContext>`), no mesmo padrão de
+> `CriarContextoDaEmpresa` que o `SeedDemoData` já usa em `Program.cs:255-266`: uma passada de
+> leitura no contexto central para descobrir os `EmpresaId` distintos, e uma passada de escrita
+> **por empresa** com contexto tenant-bound. O marcador de execução vai no contexto central
+> (`RegistroAuditoria` é global e não tem filtro).
+
 **Files:**
 - Create: `src/RevendaApp.Web/Features/Fiado/Normalizacao/NormalizarFiadoLegado.cs`
 - Modify: `src/RevendaApp.Domain/Entities/RegistroAuditoria.cs` (`Acoes`, `Origens`)
@@ -769,7 +848,7 @@ git commit -m "feat: adiciona coluna de valor pago fiado com backfill"
 - Consumes: `Venda.DefinirValorPagoFiado` (novo, criado nesta task), `Venda.SaldoFiado`, `RegistroAuditoria`.
 - Produces:
   - `Venda.DefinirValorPagoFiado(decimal valor) : void` (idempotente por construção)
-  - `NormalizarFiadoLegado.ExecutarAsync(AppDbContext db, CancellationToken ct) : Task<ResultadoNormalizacao>`
+  - `NormalizarFiadoLegado.ExecutarAsync(AppDbContext dbCentral, Func<Guid, AppDbContext> criarContextoDaEmpresa, CancellationToken ct) : Task<ResultadoNormalizacao>`
   - `ResultadoNormalizacao(int ClientesAnalisados, int VendasNormalizadas, int Divergencias)` (record)
   - `RegistroAuditoria.Acoes.FiadoLegadoNormalizado`, `RegistroAuditoria.Origens.Sistema`
 
@@ -791,10 +870,17 @@ namespace RevendaApp.UnitTests.Features.Fiado;
 
 public class NormalizarFiadoLegadoTests
 {
-    private static async Task<(Infrastructure.AppDbContext Db, Cliente Cliente)> CenarioAsync(
+    /// <summary>
+    /// Cria a base InMemory com <b>nome fixo</b> para que a fábrica passada ao normalizador abra
+    /// contextos novos na MESMA base. A fábrica não pode devolver este mesmo <c>db</c>: o
+    /// normalizador faz <c>await using</c> no contexto que a fábrica entrega e o descartaria no
+    /// fim da primeira empresa.
+    /// </summary>
+    private static async Task<(Infrastructure.AppDbContext Db, Cliente Cliente, string Banco)> CenarioAsync(
         decimal[] valoresFiado, decimal[] pagamentos)
     {
-        var db = InMemoryDbContextFactory.Create(TenantTeste.EmpresaId);
+        var banco = Guid.NewGuid().ToString();
+        var db = InMemoryDbContextFactory.Create(TenantTeste.EmpresaId, nomeBanco: banco);
         var cliente = new Cliente("Maria", "11988887777", "Rua A, 1");
         db.Clientes.Add(cliente);
         await db.SaveChangesAsync();
@@ -818,17 +904,30 @@ public class NormalizarFiadoLegadoTests
         }
 
         await db.SaveChangesAsync();
-        return (db, cliente);
+        return (db, cliente, banco);
     }
+
+    /// <summary>Fábrica que abre um contexto NOVO na mesma base InMemory do cenário.</summary>
+    private static Func<Guid, Infrastructure.AppDbContext> Fabrica(string banco) =>
+        _ => InMemoryDbContextFactory.Create(TenantTeste.EmpresaId, nomeBanco: banco);
+
+    /// <summary>
+    /// Contexto de leitura limpo para os asserts. A normalização grava por um contexto próprio,
+    /// então o <c>db</c> do cenário tem entidades rastreadas com estado antigo — ler por ele
+    /// devolveria o valor de antes da normalização.
+    /// </summary>
+    private static Infrastructure.AppDbContext Leitura(string banco) =>
+        InMemoryDbContextFactory.Create(TenantTeste.EmpresaId, nomeBanco: banco);
 
     [Fact]
     public async Task Normalizacao_aloca_pagamentos_parciais_nas_vendas_mais_antigas()
     {
-        var (db, _) = await CenarioAsync([60m, 40m], [50m]);
+        var (db, _, banco) = await CenarioAsync([60m, 40m], [50m]);
 
-        await NormalizarFiadoLegado.ExecutarAsync(db, CancellationToken.None);
+        await NormalizarFiadoLegado.ExecutarAsync(db, Fabrica(banco), CancellationToken.None);
 
-        var vendas = db.Vendas.OrderBy(v => v.DataHora).ToList();
+        using var leitura = Leitura(banco);
+        var vendas = leitura.Vendas.OrderBy(v => v.DataHora).ToList();
         Assert.Equal(50m, vendas[0].ValorPagoFiado);
         Assert.Equal(10m, vendas[0].SaldoFiado);
         Assert.Equal(0m, vendas[1].ValorPagoFiado);
@@ -837,11 +936,12 @@ public class NormalizarFiadoLegadoTests
     [Fact]
     public async Task Normalizacao_quita_venda_quando_a_alocacao_cobre_o_total()
     {
-        var (db, _) = await CenarioAsync([60m, 40m], [70m]);
+        var (db, _, banco) = await CenarioAsync([60m, 40m], [70m]);
 
-        await NormalizarFiadoLegado.ExecutarAsync(db, CancellationToken.None);
+        await NormalizarFiadoLegado.ExecutarAsync(db, Fabrica(banco), CancellationToken.None);
 
-        var vendas = db.Vendas.OrderBy(v => v.DataHora).ToList();
+        using var leitura = Leitura(banco);
+        var vendas = leitura.Vendas.OrderBy(v => v.DataHora).ToList();
         Assert.Equal(VendaStatus.FiadoQuitado, vendas[0].Status);
         Assert.Equal(10m, vendas[1].ValorPagoFiado);
         Assert.Equal(VendaStatus.FiadoAberto, vendas[1].Status);
@@ -850,43 +950,47 @@ public class NormalizarFiadoLegadoTests
     [Fact]
     public async Task Normalizacao_ignora_pagamento_de_venda_no_ato()
     {
-        var (db, cliente) = await CenarioAsync([100m], []);
+        var (db, cliente, banco) = await CenarioAsync([100m], []);
         // Pagamento vinculado a venda (não-fiado) não pode abater fiado.
         db.Pagamentos.Add(new Pagamento(cliente.Id, 100m, FormaPagamento.Pix, vendaId: Guid.NewGuid()));
         await db.SaveChangesAsync();
 
-        await NormalizarFiadoLegado.ExecutarAsync(db, CancellationToken.None);
+        await NormalizarFiadoLegado.ExecutarAsync(db, Fabrica(banco), CancellationToken.None);
 
-        Assert.Equal(0m, db.Vendas.Single().ValorPagoFiado);
+        using var leitura = Leitura(banco);
+        Assert.Equal(0m, leitura.Vendas.Single().ValorPagoFiado);
     }
 
     [Fact]
     public async Task Normalizacao_ignora_venda_excluida()
     {
-        var (db, _) = await CenarioAsync([100m], [100m]);
+        var (db, _, banco) = await CenarioAsync([100m], [100m]);
         db.Vendas.Single().Excluir();
         await db.SaveChangesAsync();
 
-        await NormalizarFiadoLegado.ExecutarAsync(db, CancellationToken.None);
+        await NormalizarFiadoLegado.ExecutarAsync(db, Fabrica(banco), CancellationToken.None);
 
-        Assert.Equal(0m, db.Vendas.Single().ValorPagoFiado);
+        using var leitura = Leitura(banco);
+        Assert.Equal(0m, leitura.Vendas.Single().ValorPagoFiado);
     }
 
     [Fact]
     public async Task Normalizacao_e_idempotente()
     {
-        var (db, _) = await CenarioAsync([60m, 40m], [70m]);
+        var (db, _, banco) = await CenarioAsync([60m, 40m], [70m]);
 
-        await NormalizarFiadoLegado.ExecutarAsync(db, CancellationToken.None);
-        var primeira = db.Vendas.OrderBy(v => v.DataHora).Select(v => v.ValorPagoFiado).ToList();
+        await NormalizarFiadoLegado.ExecutarAsync(db, Fabrica(banco), CancellationToken.None);
+        using var leitura1 = Leitura(banco);
+        var primeira = leitura1.Vendas.OrderBy(v => v.DataHora).Select(v => v.ValorPagoFiado).ToList();
 
         // Remove o marcador e roda de novo: o estado tem de ser o mesmo (set absoluto, não acúmulo).
-        var marcador = db.RegistrosAuditoria.Single(r => r.Acao == RegistroAuditoria.Acoes.FiadoLegadoNormalizado);
-        db.RegistrosAuditoria.Remove(marcador);
-        await db.SaveChangesAsync();
+        var marcador = leitura1.RegistrosAuditoria.Single(r => r.Acao == RegistroAuditoria.Acoes.FiadoLegadoNormalizado);
+        leitura1.RegistrosAuditoria.Remove(marcador);
+        await leitura1.SaveChangesAsync();
 
-        await NormalizarFiadoLegado.ExecutarAsync(db, CancellationToken.None);
-        var segunda = db.Vendas.OrderBy(v => v.DataHora).Select(v => v.ValorPagoFiado).ToList();
+        await NormalizarFiadoLegado.ExecutarAsync(db, Fabrica(banco), CancellationToken.None);
+        using var leitura2 = Leitura(banco);
+        var segunda = leitura2.Vendas.OrderBy(v => v.DataHora).Select(v => v.ValorPagoFiado).ToList();
 
         Assert.Equal(primeira, segunda);
     }
@@ -894,43 +998,46 @@ public class NormalizarFiadoLegadoTests
     [Fact]
     public async Task Normalizacao_nao_aloca_excedente_de_credito()
     {
-        var (db, _) = await CenarioAsync([100m], [150m]);
+        var (db, _, banco) = await CenarioAsync([100m], [150m]);
 
-        await NormalizarFiadoLegado.ExecutarAsync(db, CancellationToken.None);
+        await NormalizarFiadoLegado.ExecutarAsync(db, Fabrica(banco), CancellationToken.None);
 
-        Assert.Equal(100m, db.Vendas.Single().ValorPagoFiado);
+        using var leitura = Leitura(banco);
+        Assert.Equal(100m, leitura.Vendas.Single().ValorPagoFiado);
     }
 
     [Fact]
     public async Task Normalizacao_nao_roda_quando_o_marcador_ja_existe()
     {
-        var (db, _) = await CenarioAsync([100m], [100m]);
+        var (db, _, banco) = await CenarioAsync([100m], [100m]);
         // Marcador já gravado (como numa subida anterior) e venda ainda sem alocação:
         // a segunda execução não pode tocar nada.
         db.RegistrosAuditoria.Add(new RegistroAuditoria(null, null, null,
             RegistroAuditoria.Acoes.FiadoLegadoNormalizado, "resumo", RegistroAuditoria.Origens.Sistema));
         await db.SaveChangesAsync();
 
-        var resultado = await NormalizarFiadoLegado.ExecutarAsync(db, CancellationToken.None);
+        var resultado = await NormalizarFiadoLegado.ExecutarAsync(db, Fabrica(banco), CancellationToken.None);
 
         Assert.Equal(0, resultado.VendasNormalizadas);
-        Assert.Equal(0m, db.Vendas.Single().ValorPagoFiado);
-        Assert.Equal(1, db.RegistrosAuditoria.Count());
+        using var leitura = Leitura(banco);
+        Assert.Equal(0m, leitura.Vendas.Single().ValorPagoFiado);
+        Assert.Equal(1, leitura.RegistrosAuditoria.Count());
     }
 
     [Fact]
     public async Task Normalizacao_registra_divergencia_sem_alterar_saldo_do_cliente()
     {
-        var (db, cliente) = await CenarioAsync([100m], [40m]);
+        var (db, cliente, banco) = await CenarioAsync([100m], [40m]);
         // Simula ajuste manual: saldo do cadastro difere da soma das vendas.
         cliente.RegistrarPagamento(50m);
         await db.SaveChangesAsync();
 
-        var resultado = await NormalizarFiadoLegado.ExecutarAsync(db, CancellationToken.None);
+        var resultado = await NormalizarFiadoLegado.ExecutarAsync(db, Fabrica(banco), CancellationToken.None);
 
         Assert.Equal(1, resultado.Divergencias);
-        Assert.Equal(10m, (await db.Clientes.FindAsync(cliente.Id))!.SaldoDevedor);
-        var marcador = db.RegistrosAuditoria.Single(r => r.Acao == RegistroAuditoria.Acoes.FiadoLegadoNormalizado);
+        using var leitura = Leitura(banco);
+        Assert.Equal(10m, (await leitura.Clientes.FindAsync(cliente.Id))!.SaldoDevedor);
+        var marcador = leitura.RegistrosAuditoria.Single(r => r.Acao == RegistroAuditoria.Acoes.FiadoLegadoNormalizado);
         Assert.Contains(cliente.Id.ToString(), marcador.Detalhes);
     }
 }
@@ -1036,16 +1143,27 @@ public sealed record ResultadoNormalizacao(int ClientesAnalisados, int VendasNor
 /// e são replicados em FIFO sobre as vendas em aberto de cada cliente.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Roda no bootstrap, uma única vez, marcada por <see cref="RegistroAuditoria.Acoes.FiadoLegadoNormalizado"/>.
 /// É idempotente e não sobrescreve <see cref="Cliente.SaldoDevedor"/>: divergências são
 /// registradas, não corrigidas à força.
+/// </para>
+/// <para>
+/// <b>Recebe a fábrica de contextos por empresa</b> porque o bootstrap resolve o
+/// <see cref="AppDbContext"/> em modo central, e nesse modo o <c>SetEmpresaIdInterceptor</c> lança
+/// ao gravar entidade de domínio. A escrita acontece sempre num contexto tenant-bound; o
+/// <paramref name="dbCentral"/> serve só para a leitura cross-tenant dos ids de empresa e para o
+/// marcador global de auditoria.
+/// </para>
 /// </remarks>
 public static class NormalizarFiadoLegado
 {
     public static async Task<ResultadoNormalizacao> ExecutarAsync(
-        AppDbContext db, CancellationToken cancellationToken)
+        AppDbContext dbCentral,
+        Func<Guid, AppDbContext> criarContextoDaEmpresa,
+        CancellationToken cancellationToken)
     {
-        var jaExecutou = await db.RegistrosAuditoria
+        var jaExecutou = await dbCentral.RegistrosAuditoria
             .AnyAsync(r => r.Acao == RegistroAuditoria.Acoes.FiadoLegadoNormalizado, cancellationToken);
 
         if (jaExecutou)
@@ -1053,68 +1171,91 @@ public static class NormalizarFiadoLegado
             return new ResultadoNormalizacao(0, 0, 0);
         }
 
-        var clientes = await db.Clientes.ToListAsync(cancellationToken);
-        var vendasPorCliente = (await db.Vendas
-                .Where(v => v.FormaPagamento == FormaPagamento.Fiado && v.ExcluidaEm == null)
-                .OrderBy(v => v.DataHora)
-                .Include(v => v.Itens)
-                .ToListAsync(cancellationToken))
-            .GroupBy(v => v.ClienteId)
-            .ToDictionary(g => g.Key, g => g.ToList());
+        // Passada 1 (leitura, modo central): quais empresas têm venda fiado. Empresas, Vendas e
+        // Clientes no modo central não filtram, então esta leitura enxerga todas de uma vez.
+        var empresas = await dbCentral.Vendas
+            .Where(v => v.FormaPagamento == FormaPagamento.Fiado)
+            .Select(v => v.EmpresaId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
 
-        var pagamentosPorCliente = (await db.Pagamentos
-                .Where(p => p.VendaId == null)
-                .OrderBy(p => p.Data)
-                .ToListAsync(cancellationToken))
-            .GroupBy(p => p.ClienteId)
-            .ToDictionary(g => g.Key, g => g.ToList());
-
+        var clientesAnalisados = 0;
         var vendasNormalizadas = 0;
         var divergencias = 0;
         var detalhesDivergencia = new List<string>();
 
-        foreach (var cliente in clientes)
+        // Passada 2 (escrita): um contexto tenant-bound por empresa. É obrigatório — o
+        // interceptor lança ao gravar domínio em modo central, e o filtro global é o que garante
+        // que esta passada nunca misture dados de duas empresas.
+        foreach (var empresaId in empresas)
         {
-            if (!vendasPorCliente.TryGetValue(cliente.Id, out var vendas) || vendas.Count == 0)
+            await using var db = criarContextoDaEmpresa(empresaId);
+
+            var clientes = await db.Clientes.ToListAsync(cancellationToken);
+            clientesAnalisados += clientes.Count;
+
+            var vendasPorCliente = (await db.Vendas
+                    .Where(v => v.FormaPagamento == FormaPagamento.Fiado && v.ExcluidaEm == null)
+                    .OrderBy(v => v.DataHora)
+                    .Include(v => v.Itens)
+                    .ToListAsync(cancellationToken))
+                .GroupBy(v => v.ClienteId)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            var pagamentosPorCliente = (await db.Pagamentos
+                    .Where(p => p.VendaId == null)
+                    .OrderBy(p => p.Data)
+                    .ToListAsync(cancellationToken))
+                .GroupBy(p => p.ClienteId)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            foreach (var cliente in clientes)
             {
-                continue;
-            }
-
-            // Replay determinístico: a soma dos pagamentos de fiado (VendaId null) é consumida
-            // em FIFO pelas vendas em aberto. Cálculo do alvo por venda, depois um set absoluto —
-            // assim rodar de novo produz exatamente o mesmo estado.
-            var acumulado = pagamentosPorCliente.TryGetValue(cliente.Id, out var pagamentos)
-                ? pagamentos.Sum(p => p.Valor)
-                : 0m;
-
-            foreach (var venda in vendas)
-            {
-                var alocado = Math.Min(acumulado, venda.ValorTotal);
-                acumulado -= alocado;
-
-                if (venda.ValorPagoFiado != alocado)
+                if (!vendasPorCliente.TryGetValue(cliente.Id, out var vendas) || vendas.Count == 0)
                 {
-                    venda.DefinirValorPagoFiado(alocado);
-                    vendasNormalizadas++;
+                    continue;
+                }
+
+                // Replay determinístico: a soma dos pagamentos de fiado (VendaId null) é consumida
+                // em FIFO pelas vendas em aberto. Alvo calculado por venda, depois um set absoluto —
+                // assim rodar de novo produz exatamente o mesmo estado.
+                var acumulado = pagamentosPorCliente.TryGetValue(cliente.Id, out var pagamentos)
+                    ? pagamentos.Sum(p => p.Valor)
+                    : 0m;
+
+                foreach (var venda in vendas)
+                {
+                    var alocado = Math.Min(acumulado, venda.ValorTotal);
+                    acumulado -= alocado;
+
+                    if (venda.ValorPagoFiado != alocado)
+                    {
+                        venda.DefinirValorPagoFiado(alocado);
+                        vendasNormalizadas++;
+                    }
+                }
+
+                var somaSaldoVendas = vendas.Sum(v => v.SaldoFiado);
+                if (somaSaldoVendas != cliente.SaldoDevedor)
+                {
+                    divergencias++;
+                    detalhesDivergencia.Add(
+                        $"{empresaId}/{cliente.Id}: cadastro {cliente.SaldoDevedor:F2}, vendas {somaSaldoVendas:F2}");
                 }
             }
 
-            var somaSaldoVendas = vendas.Sum(v => v.SaldoFiado);
-            if (somaSaldoVendas != cliente.SaldoDevedor)
-            {
-                divergencias++;
-                detalhesDivergencia.Add($"{cliente.Id}: saldo do cadastro {cliente.SaldoDevedor:F2}, vendas {somaSaldoVendas:F2}");
-            }
+            await db.SaveChangesAsync(cancellationToken);
         }
 
-        var resumo = $"Clientes analisados: {clientes.Count}; vendas normalizadas: {vendasNormalizadas}; " +
+        var resumo = $"Clientes analisados: {clientesAnalisados}; vendas normalizadas: {vendasNormalizadas}; " +
                      $"divergências: {divergencias}";
         if (detalhesDivergencia.Count > 0)
         {
             resumo += "; " + string.Join(" | ", detalhesDivergencia);
         }
 
-        db.RegistrosAuditoria.Add(new RegistroAuditoria(
+        // O marcador é global (RegistroAuditoria não tem filtro): grava no contexto central.
+        dbCentral.RegistrosAuditoria.Add(new RegistroAuditoria(
             empresaId: null,
             usuarioId: null,
             usuarioNome: null,
@@ -1122,9 +1263,9 @@ public static class NormalizarFiadoLegado
             resumo,
             RegistroAuditoria.Origens.Sistema));
 
-        await db.SaveChangesAsync(cancellationToken);
+        await dbCentral.SaveChangesAsync(cancellationToken);
 
-        return new ResultadoNormalizacao(clientes.Count, vendasNormalizadas, divergencias);
+        return new ResultadoNormalizacao(clientesAnalisados, vendasNormalizadas, divergencias);
     }
 }
 ```
@@ -1135,6 +1276,13 @@ public static class NormalizarFiadoLegado
 - `venda.DefinirValorPagoFiado(alocado)` (set absoluto), nunca `AbaterFiado`.
 - `Cliente.SaldoDevedor` é **lido**, nunca escrito.
 - `CancellationToken` propagado em todos os `await`.
+- Escrita **só** por `criarContextoDaEmpresa(empresaId)`, nunca por `dbCentral`.
+
+**Nos testes unitários**, a fábrica devolve um contexto **novo na mesma base InMemory** (nome de
+banco fixo via `InMemoryDbContextFactory.Create(..., nomeBanco:)`), nunca o `db` do próprio teste:
+o normalizador faz `await using` no contexto que recebe e descartaria o `db` compartilhado. A
+separação central/tenant só é provada no teste de integração (Task 7), onde os contextos são
+realmente diferentes.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -1162,17 +1310,36 @@ git commit -m "feat: normaliza quitacao de fiado legado a partir do historico"
 
 - [ ] **Step 1: Write the failing integration test**
 
+Este é o teste que prova a separação central/tenant — os unitários passam `_ => db` e não a
+exercitam. Use `DatabaseFixture` com **duas empresas**, dados criados por
+`CreateDbContext(empresaId)` e o contexto central para a chamada:
+
 ```csharp
 // tests/RevendaApp.IntegrationTests/NormalizacaoFiadoBootstrapTests.cs
 [Fact]
 public async Task Normalizacao_corrige_banco_legado_contra_Postgres()
 {
-    // Monta via CreateDbContext(): cliente + 2 vendas fiado (60, 40) + pagamento de fiado de 70
-    // (Pagamento com VendaId null) e SaldoDevedor reduzido em 70.
-    // Zera ValorPagoFiado das vendas (UPDATE direto via ExecuteSqlRaw no banco de teste, ou
-    // recriando as vendas com ValorPagoFiado 0).
-    // Chama NormalizarFiadoLegado.ExecutarAsync.
-    // Espera: venda antiga FiadoQuitado, venda nova com ValorPagoFiado 10, e o marcador gravado.
+    // Empresa A: cliente + vendas fiado de 60 e 40 + Pagamento de 70 com VendaId null,
+    //            SaldoDevedor reduzido em 70.
+    // Empresa B: cliente + venda fiado de 30 + Pagamento de 10 (VendaId null).
+    // Executa com o contexto central e a fábrica:
+    //   using var central = fixture.CreateDbContextCentral();
+    //   await NormalizarFiadoLegado.ExecutarAsync(
+    //       central, id => fixture.CreateDbContext(id), CancellationToken.None);
+    // (lambda explícita: CreateDbContext recebe Guid? e um method group não converte para
+    //  Func<Guid, AppDbContext> — a conversão implícita Guid→Guid? não vale em method group.)
+    // Asserts (cada um por CreateDbContext(empresaId)):
+    //   A: venda antiga FiadoQuitado, venda nova ValorPagoFiado == 10m
+    //   B: venda ValorPagoFiado == 10m          ← prova que a passada não parou na 1ª empresa
+    //   marcador: central.RegistrosAuditoria.Any(Acao == FiadoLegadoNormalizado) == true
+}
+
+[Fact]
+public async Task Normalizacao_nao_grava_dominio_pelo_contexto_central()
+{
+    // Guarda de regressão: chamar ExecutarAsync(central, _ => central, ...) tem de lançar
+    // (o interceptor recusa Added de domínio em modo central). Se algum dia alguém "simplificar"
+    // a assinatura removendo a fábrica, este teste falha.
 }
 ```
 
@@ -1181,18 +1348,39 @@ public async Task Normalizacao_corrige_banco_legado_contra_Postgres()
 Run: `dotnet test tests/RevendaApp.IntegrationTests --filter FullyQualifiedName~NormalizacaoFiadoBootstrapTests`
 Expected: FAIL (cenário de zeração ou comportamento do Postgres).
 
-- [ ] **Step 3: Wire into `Program.cs`**
+- [ ] **Step 3: Extract the tenant-bound context factory and wire into `Program.cs`**
 
-Logo depois de `await dbContext.Database.MigrateAsync();` e antes do `SeedDefaultAdminUserAsync`:
+O bloco do seed já monta um contexto tenant-bound local (`CriarContextoDaEmpresa`, linhas
+~255-266). Extraia-o para uso compartilhado **antes** da chamada da normalização, sem mudar o
+comportamento do seed:
 
 ```csharp
-// Normalização única da quitação de fiado legado (Fase 0). Deriva de histórico imutável,
-// é idempotente e grava um marcador em RegistroAuditoria. Falha não derruba o bootstrap:
-// o app continua servindo e o relatório de fiado sinaliza os clientes divergentes.
+// Contexto tenant-bound para trabalho de bootstrap: o AppDbContext da DI resolve em modo
+// central (sem empresa) e o interceptor lança ao gravar domínio. Usado pelo seed de demonstração
+// e pela normalização do fiado legado.
+AppDbContext CriarContextoDaEmpresa(Guid empresaId)
+{
+    var tenant = new TenantFixo(empresaId);
+    var options = new DbContextOptionsBuilder<AppDbContext>()
+        .UseNpgsql(app.Configuration.GetConnectionString("revendaapp"))
+        .AddInterceptors(new SetEmpresaIdInterceptor(tenant))
+        .Options;
+
+    return new AppDbContext(options, tenant);
+}
+```
+
+Depois de `await dbContext.Database.MigrateAsync();` e **antes** do `SeedDefaultAdminUserAsync`:
+
+```csharp
+// Normalização única da quitação de fiado legado. Deriva de histórico imutável, é idempotente
+// e grava um marcador em RegistroAuditoria. Falha não derruba o bootstrap: o app continua
+// servindo e o relatório de fiado sinaliza os clientes divergentes.
 LogsDoBootstrap.NormalizandoFiadoLegado(bootstrapLogger);
 try
 {
-    var normalizacao = await NormalizarFiadoLegado.ExecutarAsync(dbContext, CancellationToken.None);
+    var normalizacao = await NormalizarFiadoLegado.ExecutarAsync(
+        dbContext, CriarContextoDaEmpresa, CancellationToken.None);
     LogsDoBootstrap.FiadoLegadoNormalizado(bootstrapLogger,
         normalizacao.ClientesAnalisados, normalizacao.VendasNormalizadas, normalizacao.Divergencias);
 }
@@ -1201,6 +1389,9 @@ catch (Exception ex)
     bootstrapLogger.LogError(ex, "Falha ao normalizar a quitação de fiado legado; seguindo o bootstrap.");
 }
 ```
+
+No bloco do `SeedDemoData`, remova a definição local de `CriarContextoDaEmpresa` e use a extraída
+(a assinatura é idêntica).
 
 E em `LogsDoBootstrap`:
 
@@ -1412,16 +1603,13 @@ namespace RevendaApp.UnitTests.Features.Relatorios;
 
 public class ObterRelatorioEstoqueQueryHandlerTests
 {
-    private static async Task<(Infrastructure.AppDbContext Db, Produto Produto)> CenarioAsync(params MovimentacaoEstoque[] movimentos)
+    /// <summary>Cria o contexto com um produto e devolve ambos; o teste adiciona movimentos com o Id dele.</summary>
+    private static async Task<(Infrastructure.AppDbContext Db, Produto Produto)> CenarioAsync()
     {
         var db = InMemoryDbContextFactory.Create(TenantTeste.EmpresaId);
         var produto = new Produto("Botijão 13kg", TipoProduto.Gas, 100m, 60m, 80m);
         produto.RegistrarEntrada(50);
         db.Produtos.Add(produto);
-        foreach (var m in movimentos)
-        {
-            db.MovimentacoesEstoque.Add(m);
-        }
         await db.SaveChangesAsync();
         return (db, produto);
     }
@@ -1429,11 +1617,17 @@ public class ObterRelatorioEstoqueQueryHandlerTests
     [Fact]
     public async Task Estoque_agrupa_entradas_e_saidas_por_dia_de_brasilia()
     {
-        var produtoId = Guid.NewGuid();
+        // CenarioAsync cria o produto; a movimentação PRECISA usar o Id dele — um Id aleatório
+        // ficaria órfão e o handler (que lista produtos e casa movimento por ProdutoId) a
+        // descartaria, deixando o teste verde por vacuidade.
+        var db = InMemoryDbContextFactory.Create(TenantTeste.EmpresaId);
+        var produto = new Produto("Botijão 13kg", TipoProduto.Gas, 100m, 60m, 80m);
+        produto.RegistrarEntrada(50);
+        db.Produtos.Add(produto);
         // 02/11 02:00 UTC = 01/11 23:00 BRT → conta no dia 1.
-        var (db, _) = await CenarioAsync(
-            new MovimentacaoEstoque(produtoId, TipoMovimentacaoEstoque.Saida, 3, "Venda",
-                new DateTime(2026, 11, 2, 2, 0, 0, DateTimeKind.Utc)));
+        db.MovimentacoesEstoque.Add(new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Saida, 3, "Venda",
+            new DateTime(2026, 11, 2, 2, 0, 0, DateTimeKind.Utc)));
+        await db.SaveChangesAsync();
         var handler = new ObterRelatorioEstoqueQueryHandler(db, TenantTeste.Contexto());
 
         var resultado = await handler.Handle(new ObterRelatorioEstoqueQuery(new PeriodoMes(2026, 11)), CancellationToken.None);
@@ -1446,12 +1640,16 @@ public class ObterRelatorioEstoqueQueryHandlerTests
     [Fact]
     public async Task Estoque_exclui_ajustes_da_matriz_e_lista_em_ajustes()
     {
-        var produtoId = Guid.NewGuid();
-        var (db, _) = await CenarioAsync(
-            new MovimentacaoEstoque(produtoId, TipoMovimentacaoEstoque.Ajuste, 42, "Inventário",
+        var db = InMemoryDbContextFactory.Create(TenantTeste.EmpresaId);
+        var produto = new Produto("Botijão 13kg", TipoProduto.Gas, 100m, 60m, 80m);
+        produto.RegistrarEntrada(50);
+        db.Produtos.Add(produto);
+        db.MovimentacoesEstoque.AddRange(
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Ajuste, 42, "Inventário",
                 new DateTime(2026, 11, 10, 12, 0, 0, DateTimeKind.Utc)),
-            new MovimentacaoEstoque(produtoId, TipoMovimentacaoEstoque.Entrada, 5, "Compra",
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Entrada, 5, "Compra",
                 new DateTime(2026, 11, 11, 12, 0, 0, DateTimeKind.Utc)));
+        await db.SaveChangesAsync();
         var handler = new ObterRelatorioEstoqueQueryHandler(db, TenantTeste.Contexto());
 
         var resultado = await handler.Handle(new ObterRelatorioEstoqueQuery(new PeriodoMes(2026, 11)), CancellationToken.None);
@@ -1468,12 +1666,16 @@ public class ObterRelatorioEstoqueQueryHandlerTests
     [Fact]
     public async Task Estoque_calcula_totais_liquido_e_estoque_atual()
     {
-        var produtoId = Guid.NewGuid();
-        var (db, _) = await CenarioAsync(
-            new MovimentacaoEstoque(produtoId, TipoMovimentacaoEstoque.Entrada, 10, "Compra",
+        var db = InMemoryDbContextFactory.Create(TenantTeste.EmpresaId);
+        var produto = new Produto("Botijão 13kg", TipoProduto.Gas, 100m, 60m, 80m);
+        produto.RegistrarEntrada(50);
+        db.Produtos.Add(produto);
+        db.MovimentacoesEstoque.AddRange(
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Entrada, 10, "Compra",
                 new DateTime(2026, 11, 5, 12, 0, 0, DateTimeKind.Utc)),
-            new MovimentacaoEstoque(produtoId, TipoMovimentacaoEstoque.Saida, 4, "Venda",
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Saida, 4, "Venda",
                 new DateTime(2026, 11, 6, 12, 0, 0, DateTimeKind.Utc)));
+        await db.SaveChangesAsync();
         var handler = new ObterRelatorioEstoqueQueryHandler(db, TenantTeste.Contexto());
 
         var resultado = await handler.Handle(new ObterRelatorioEstoqueQuery(new PeriodoMes(2026, 11)), CancellationToken.None);
@@ -1514,7 +1716,26 @@ public class ObterRelatorioEstoqueQueryHandlerTests
         var linha = resultado.Produtos.Single();
         Assert.Equal(30, linha.EntradasPorDia.Count);
         Assert.Equal(30, linha.SaidasPorDia.Count);
+        Assert.Equal(30, resultado.PorDia.Count);
         Assert.Empty(resultado.Ajustes);
+    }
+
+    [Fact]
+    public async Task Estoque_nao_inclui_movimento_de_fora_do_mes()
+    {
+        // 31/10 12:00 UTC e 01/12 12:00 UTC ficam fora de novembro.
+        var (db, produto) = await CenarioAsync();
+        db.MovimentacoesEstoque.AddRange(
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Entrada, 7, "Compra",
+                new DateTime(2026, 10, 31, 12, 0, 0, DateTimeKind.Utc)),
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Entrada, 9, "Compra",
+                new DateTime(2026, 12, 1, 12, 0, 0, DateTimeKind.Utc)));
+        await db.SaveChangesAsync();
+        var handler = new ObterRelatorioEstoqueQueryHandler(db, TenantTeste.Contexto());
+
+        var resultado = await handler.Handle(new ObterRelatorioEstoqueQuery(new PeriodoMes(2026, 11)), CancellationToken.None);
+
+        Assert.Equal(0, resultado.Produtos.Single().TotalEntradas);
     }
 
     [Fact]
@@ -1647,12 +1868,41 @@ git commit -m "feat: adiciona relatorio de estoque por dia"
 
 ```csharp
 // tests/RevendaApp.UnitTests/Components/RelatoriosHomeTests.cs
-// Segue o padrão de EstoqueListaAdminTests: bUnit com DI mínima.
-[Fact]
-public void RelatoriosHome_lista_os_quatro_relatorios_com_link()
+using Bunit;
+
+using Microsoft.Extensions.DependencyInjection;
+
+using MudBlazor.Services;
+
+using RevendaApp.Infrastructure;
+using RevendaApp.Infrastructure.Tenancy;
+using RevendaApp.UnitTests.TestHelpers;
+using RevendaApp.Web.Common;
+using RevendaApp.Web.Features.Relatorios.Home;
+
+namespace RevendaApp.UnitTests.Components;
+
+public class RelatoriosHomeTests
 {
-    // Renderiza RelatoriosHome e verifica que o markup contém os hrefs
-    // /relatorios/estoque, /relatorios/vendas, /relatorios/fiado, /relatorios/vasilhames
+    [Fact]
+    public void RelatoriosHome_lista_os_quatro_relatorios_com_link()
+    {
+        using var ctx = new BunitContext();
+        ctx.JSInterop.Mode = JSRuntimeMode.Loose;
+        ctx.Services.AddMudServices();
+        // IdentidadeEmpresaService só precisa do AppDbContext para a assinatura (o título não
+        // toca o banco) — mesmo padrão de EstoqueListaAdminTests.
+        ctx.Services.AddSingleton<AppDbContext>(InMemoryDbContextFactory.Create());
+        ctx.Services.AddSingleton<ITenantContext>(new FakeTenantContext(TenantTeste.EmpresaId, nomeEmpresa: "Empresa Teste"));
+        ctx.Services.AddSingleton<IdentidadeEmpresaService>();
+
+        var cut = ctx.Render<RelatoriosHome>();
+
+        Assert.Contains("/relatorios/estoque", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("/relatorios/vendas", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("/relatorios/fiado", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("/relatorios/vasilhames", cut.Markup, StringComparison.Ordinal);
+    }
 }
 ```
 
@@ -1663,7 +1913,10 @@ Expected: FAIL — componente não existe.
 
 - [ ] **Step 3: Implement the shell, the landing and the page**
 
-`RelatorioShell.razor` (sem `@rendermode`; é usado dentro de páginas interativas):
+`RelatorioShell.razor` (sem `@rendermode`; é usado dentro de páginas interativas). Precisa do
+`@using MudBlazor` — os `_Imports.razor` do projeto já cobrem `MudBlazor` e
+`RevendaApp.Web.Common`, mas **não** `RevendaApp.Web.Common.Relatorios`, que é usado no
+`EventCallback<PeriodoMes>`:
 
 ```razor
 @using RevendaApp.Web.Common.Relatorios
@@ -1678,13 +1931,13 @@ Expected: FAIL — componente não existe.
         <MudSelect T="int" Label="Mês" Value="Mes" ValueChanged="OnMesChangedAsync" Dense="true" Style="max-width: 160px;">
             @for (var m = 1; m <= 12; m++)
             {
-                <MudSelectItem T="int" Value="m">@NomeMes(m)</MudSelectItem>
+                <MudSelectItem T="int" Value="@m">@NomeMes(m)</MudSelectItem>
             }
         </MudSelect>
         <MudSelect T="int" Label="Ano" Value="Ano" ValueChanged="OnAnoChangedAsync" Dense="true" Style="max-width: 120px;">
             @for (var a = DateTime.Now.Year; a >= DateTime.Now.Year - 4; a--)
             {
-                <MudSelectItem T="int" Value="a">@a</MudSelectItem>
+                <MudSelectItem T="int" Value="@a">@a</MudSelectItem>
             }
         </MudSelect>
     </div>
@@ -1713,6 +1966,7 @@ Expected: FAIL — componente não existe.
 ```razor
 @page "/relatorios"
 @attribute [Authorize(Policy = RevendaApp.Web.Common.Authorization.Politicas.ApenasEmpresa)]
+@using Microsoft.AspNetCore.Authorization
 @using RevendaApp.Web.Common
 @inject IdentidadeEmpresaService Identidade
 
@@ -1916,6 +2170,7 @@ git commit -m "feat: adiciona relatorio de vendas do mes"
 **Interfaces:**
 - Consumes: `PeriodoMes`, `Venda.SaldoFiado`, `BrasilTimeZone`, `TimeProvider`.
 - Produces:
+  - `ObterRelatorioFiadoQueryHandler(AppDbContext db, ITenantContext tenant, TimeProvider timeProvider)`
   - `ObterRelatorioFiadoQuery(PeriodoMes Periodo) : IQuery<RelatorioFiadoResult>`
   - `RelatorioFiadoResult(PeriodoMes Periodo, decimal TotalAReceber, IReadOnlyList<FaixaAging> Faixas, IReadOnlyList<ClienteDevedorItem> Clientes, IReadOnlyList<RecebimentoDoDia> RecebimentosPorDia, IReadOnlyList<RecebimentoPorForma> RecebimentosPorForma, decimal TotalRecebido)`
   - `FaixaAging(string Rotulo, int Clientes, decimal Valor)`
@@ -1924,8 +2179,25 @@ git commit -m "feat: adiciona relatorio de vendas do mes"
 
 - [ ] **Step 1: Write the failing tests**
 
-O handler recebe `TimeProvider` (use `FakeTimeProvider` fixo em `2026-11-17T12:00:00Z`, ou o
-`TimeProvider.System` quando a asserção não depender de "hoje").
+O handler recebe `TimeProvider`. **Não há `FakeTimeProvider` no projeto** (o
+`Microsoft.Extensions.TimeProvider.Testing` não está em `Directory.Packages.props`) e esta entrega
+não adiciona dependência: crie um stub local na pasta de helpers de teste, no mesmo estilo de
+`FakeTenantContext`:
+
+```csharp
+// tests/RevendaApp.UnitTests/TestHelpers/TimeProviderFixo.cs
+namespace RevendaApp.UnitTests.TestHelpers;
+
+/// <summary>TimeProvider com instante fixo, para testes de "hoje" sem depender do relógio.</summary>
+public sealed class TimeProviderFixo(DateTimeOffset agora) : TimeProvider
+{
+    public static TimeProviderFixo Em(DateTime utc) => new(new DateTimeOffset(utc, TimeSpan.Zero));
+
+    public override DateTimeOffset GetUtcNow() => agora;
+}
+```
+
+Uso: `TimeProviderFixo.Em(new DateTime(2026, 11, 17, 12, 0, 0, DateTimeKind.Utc))`.
 
 | Teste | Cenário | Asserção exata |
 |---|---|---|
@@ -1943,11 +2215,19 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement query, handler and page**
 
-- Handler: `EmpresaIdRequerida` primeiro; clientes com `SaldoDevedor > 0`; para cada um, carregar
-  as vendas fiado abertas (`Include(Itens)`) e usar `venda.SaldoFiado` como valor em aberto;
-  `DiasAtraso` = `(hojeBrasilia - BrasilTimeZone.ParaBrasilia(vendaMaisAntiga.DataHora).Date).Days`
-  com `TimeProvider`; `TemDivergenciaDeSaldo` = `vendas.Sum(v => v.SaldoFiado) != cliente.SaldoDevedor`;
-  faixas 0–30, 31–60, 61–90, 90+; recebimentos de `Pagamento` no intervalo, por dia e por forma.
+- Handler, **sem N+1**: uma query só para os clientes com `SaldoDevedor > 0` e **uma** query para
+  todas as vendas fiado abertas desses clientes
+  (`.Where(v => v.FormaPagamento == Fiado && v.Status == FiadoAberto && v.ExcluidaEm == null)`,
+  `Include(v => v.Itens)`, `AsNoTracking()`), agrupada em memória por `ClienteId`. Nunca
+  consultar vendas dentro do laço de clientes.
+- `EmpresaIdRequerida` primeiro; `TimeProvider` injetado para "hoje".
+- `DiasAtraso` = `(hojeBrasilia - BrasilTimeZone.ParaBrasilia(vendaMaisAntiga.DataHora).Date).Days`,
+  onde `hojeBrasilia = BrasilTimeZone.ParaBrasilia(timeProvider.GetUtcNow().UtcDateTime).Date`.
+- `TemDivergenciaDeSaldo` = `vendasDoCliente.Sum(v => v.SaldoFiado) != cliente.SaldoDevedor`.
+- `Saldo` do item é `cliente.SaldoDevedor` (é o total a receber — a soma de `SaldoFiado` é só o
+  detector de divergência, não substitui o valor exibido).
+- Faixas 0–30, 31–60, 61–90, 90+; recebimentos de `Pagamento` no intervalo, por dia e por forma.
+- `RecebimentosPorDia` tem uma entrada por dia do mês (dias sem recebimento com zero).
 - Página: `@page "/relatorios/fiado"`, `InteractiveServer`, `ApenasEmpresa`, `RelatorioShell`,
   cartões (total a receber, total recebido no mês), tabela de clientes com chip de faixa e ícone
   de alerta quando `TemDivergenciaDeSaldo` (tooltip "saldo do cadastro difere das vendas em
@@ -2067,13 +2347,44 @@ controle positivo passar.
 
 - [ ] **Step 3: Add the architecture test against `IgnoreQueryFilters`**
 
+O caminho até o código-fonte **não** pode ser relativo ao diretório de trabalho do runner (o CI
+roda de outro cwd). Suba do `AppContext.BaseDirectory` até a raiz da solução (procure
+`RevendaApp.slnx`):
+
 ```csharp
 // tests/RevendaApp.UnitTests/Architecture/RelatoriosSemIgnoreQueryFiltersTests.cs
-[Fact]
-public void Relatorios_nao_usam_IgnoreQueryFilters()
+using System.IO;
+
+namespace RevendaApp.UnitTests.Architecture;
+
+/// <summary>
+/// Os relatórios são leituras por empresa: um <c>IgnoreQueryFilters()</c> anularia o filtro global
+/// e vazaria dados entre tenants. A tentação existe justamente ao montar agregações, então é
+/// travado por teste.
+/// </summary>
+public class RelatoriosSemIgnoreQueryFiltersTests
 {
-    // Lê os arquivos .cs de Features/Relatorios via Directory.GetFiles e falha se algum contém
-    // "IgnoreQueryFilters" — a tentação existe ao montar agregações e ela anularia o filtro global.
+    [Fact]
+    public void Relatorios_nao_usam_IgnoreQueryFilters()
+    {
+        var raiz = new DirectoryInfo(AppContext.BaseDirectory);
+        while (raiz is not null && !File.Exists(Path.Combine(raiz.FullName, "RevendaApp.slnx")))
+        {
+            raiz = raiz.Parent;
+        }
+
+        Assert.NotNull(raiz);
+
+        var pastaRelatorios = Path.Combine(raiz!.FullName, "src", "RevendaApp.Web", "Features", "Relatorios");
+        var arquivos = Directory.GetFiles(pastaRelatorios, "*.cs", SearchOption.AllDirectories);
+        Assert.NotEmpty(arquivos);   // se a pasta sumir, o teste falha em vez de passar vazio
+
+        var infratores = arquivos
+            .Where(f => File.ReadAllText(f).Contains("IgnoreQueryFilters", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.Empty(infratores);
+    }
 }
 ```
 
@@ -2109,7 +2420,7 @@ Expected: PASS (unitários + integração).
 - [ ] **Step 3: Confirm the branch has all commits and no stray files**
 
 Run: `git log --oneline main..HEAD` e `git status --short`
-Expected: 14 commits de feature na branch, working tree limpa.
+Expected: 15 commits de feature na branch (Tasks 1–15), working tree limpa.
 
 - [ ] **Step 4: Report**
 

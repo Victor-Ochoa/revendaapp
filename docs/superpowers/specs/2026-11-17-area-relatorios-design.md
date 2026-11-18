@@ -100,8 +100,13 @@ Invariantes, provadas por teste de domínio:
   `SaldoFiado == 0`.
 - Venda excluída (`ExcluidaEm != null`) não recebe alocação.
 
-`MarcarFiadoQuitado()` **permanece** (usado pelo seed e por vendas legadas) e passa a ser
-equivalente a alocar o saldo restante — assim não existem dois caminhos divergentes.
+`MarcarFiadoQuitado()` **permanece** (usado pelo seed e por vendas legadas) e passa a definir
+`ValorPagoFiado = ValorTotal` — assim não existem dois caminhos divergentes.
+
+`DefinirValorPagoFiado(decimal)` é a operação de **replay** usada pela normalização (§4.0.5):
+um `set` absoluto, com clamp em `[0, ValorTotal]`, que quita quando o valor cobre o total. Ela
+existe para a normalização ser idempotente por construção — usar `AbaterFiado` somaria a
+alocação de novo a cada execução.
 
 #### 4.0.3 Alocação FIFO no pagamento
 
@@ -127,20 +132,29 @@ para cada venda fiado aberta, por DataHora asc:
 #### 4.0.4 Guarda de editar/excluir
 
 As duas guardas deixam de comparar o saldo total do cliente com o valor da venda e passam a
-comparar **a própria venda**:
+olhar **a própria venda**:
 
 ```csharp
 // antes: cliente.SaldoDevedor < venda.ValorTotal
 // depois:
-venda.FormaPagamento == FormaPagamento.Fiado && venda.Status == VendaStatus.FiadoQuitado
+venda.FormaPagamento == FormaPagamento.Fiado && venda.ValorPagoFiado > 0m
 ```
 
-Motivo: uma venda `FiadoQuitado` já teve seu lucro reconhecido; desfazê-la exige estorno do
-pagamento, que o fluxo não faz. Uma venda `FiadoAberto` — mesmo parcialmente paga — pode ser
-estornada, e `ReversaoVendaHelper` já abate `venda.ValorTotal` do saldo do cliente. **Atenção:**
-com pagamento parcial o estorno hoje devolveria o total, não o que falta; o helper passa a abater
-`venda.SaldoFiado` quando a venda já teve pagamento alocado. Isso entra na Fase 0 com teste
-próprio.
+Motivo — o fluxo de edição reverte a venda antiga e **recria** uma nova com o `ValorTotal` cheio.
+Se a reversão abatesse só o `SaldoFiado` e a nova venda somasse tudo de novo, o saldo do cliente
+**aumentaria** pelo valor que ele já pagou: o pagamento desapareceria. Carregar `ValorPagoFiado`
+para a nova venda resolveria, mas cria um segundo caminho de escrita de pagamento e amplia o
+escopo sem necessidade. Excluir uma venda parcialmente paga tem o mesmo problema (o dinheiro
+recebido ficaria órfão). Logo, fiado com qualquer pagamento alocado — quitado ou não — é
+bloqueado.
+
+A guarda antiga (`SaldoDevedor < ValorTotal`) tentava dizer "esta venda já teve pagamento", mas
+comparava a dívida **total** do cliente com **uma** venda: bloqueava exclusão legítima quando o
+cliente tinha outras dívidas e liberava indevidamente quando não tinha. A nova é exata.
+
+**Estorno:** para fiado aberto sem pagamento, `SaldoFiado == ValorTotal` e o comportamento é
+idêntico ao anterior. O helper passa a abater `venda.SaldoFiado` (e a pular a chamada quando for
+zero, porque `Cliente.RegistrarPagamento` lança com `valor <= 0`).
 
 #### 4.0.5 Migração e normalização dos dados legados
 
@@ -192,6 +206,19 @@ bootstrap do `Program.cs` **depois** de `MigrateAsync()` e antes de servir requi
 lugar do `SeedData`/`SeedDemoData`. Não vai como SQL na migração porque a lógica é FIFO por
 cliente, precisa ser testável e precisa deixar rastro; SQL de janela aqui seria ilegível e
 impossível de cobrir com o nível de teste exigido pelo projeto.
+
+**Tenancy da normalização.** O `AppDbContext` do bootstrap resolve em **modo central**
+(`ITenantContext.EmpresaId == null`): o filtro global não filtra e o `SetEmpresaIdInterceptor`
+**lança** em qualquer `Added` de entidade de domínio. Por isso a normalização recebe uma
+**fábrica de contextos por empresa** (`Func<Guid, AppDbContext>`) e faz duas passadas:
+
+1. **leitura** no contexto central: quais `EmpresaId` têm venda fiado;
+2. **escrita** num contexto tenant-bound por empresa — é a passada que grava
+   `Venda.ValorPagoFiado`, protegida pelo filtro global.
+
+O marcador de execução vai no contexto central, porque `RegistroAuditoria` é global. A fábrica é a
+mesma que o `SeedDemoData` já monta em `Program.cs`; a implementação extrai esse bloco para uso
+compartilhado.
 
 - Roda em **qualquer ambiente**, inclusive Produção (é correção de dado, não demonstração), na
   **primeira subida** após a migração. Não há modo `dry-run` nem flag de habilitação: a
@@ -398,8 +425,12 @@ ClienteDevedorItem(
 ```
 
 - Clientes com `SaldoDevedor > 0`, ordenados por saldo desc.
+- `Saldo` exibido é `Cliente.SaldoDevedor` (total a receber). A soma de `Venda.SaldoFiado` serve
+  só ao detector de divergência.
 - `DiasAtraso` = dias de calendário (Brasília) desde a venda fiado em aberto mais antiga.
-- `RecebimentosPorDia`/`PorForma` do mês a partir de `Pagamento`.
+- **Sem N+1:** uma query para os clientes devedores e **uma** para todas as vendas fiado abertas
+  desses clientes, agrupadas em memória por `ClienteId`. Nunca consultar vendas dentro do laço.
+- `RecebimentosPorDia` tem uma entrada por dia do mês; `PorForma` soma `Pagamento` do intervalo.
 
 ### 6.4 Vasilhames
 
@@ -478,7 +509,19 @@ TDD: cada item é escrito antes da implementação correspondente.
 | `Normalizacao_nao_roda_quando_o_marcador_ja_existe` | unit | execução única |
 | `Normalizacao_registra_divergencia_sem_alterar_saldo_do_cliente` | unit | reconciliação |
 | `Normalizacao_falha_nao_derruba_o_bootstrap` | unit | try/catch |
-| `Normalizacao_corrige_banco_legado_contra_Postgres` | integração | cenário real ponta a ponta |
+| `Normalizacao_corrige_banco_legado_contra_Postgres` | integração | cenário real ponta a ponta, **duas empresas** (prova que a passada não para na primeira) |
+| `Normalizacao_nao_grava_dominio_pelo_contexto_central` | integração | guarda: passar a fábrica errada (`_ => central`) tem de lançar |
+
+### Fase 0 — domínio, testes adicionais
+
+| Teste | Tipo | Pina |
+|---|---|---|
+| `DefinirValorPagoFiado_sobrescreve_e_e_idempotente` | unit | set absoluto, não acúmulo |
+| `DefinirValorPagoFiado_acima_do_total_quita_sem_estourar` | unit | clamp |
+| `Edicao_de_venda_fiado_aberta_sem_pagamento_e_permitida` | unit | guarda nova |
+| `Edicao_de_venda_fiado_com_pagamento_parcial_e_bloqueada` | unit | §4.0.4 |
+| `Edicao_de_venda_fiado_quitada_e_bloqueada` | unit | §4.0.4 |
+| `Reversao_de_venda_quitada_nao_lanca_com_saldo_zero` | unit | `RegistrarPagamento` lança com 0 |
 
 ### Relatórios — unitários (InMemory)
 
@@ -588,7 +631,9 @@ Critério de pronto do MR:
 
 | Risco | Mitigação |
 |---|---|
-| Normalização do legado altera dados de produção na primeira subida | deriva só de histórico imutável (`Pagamento.VendaId == null`, `Venda.DataHora`, `ValorTotal`), é idempotente, roda uma vez com marcador em `RegistroAuditoria` e deixa resumo + divergências no log; falha não derruba o startup |
+| Normalização do legado altera dados de produção na primeira subida | deriva só de histórico imutável (`Pagamento.VendaId == null`, `Venda.DataHora`, `ValorTotal`), é idempotente por construção (`DefinirValorPagoFiado` é set absoluto), roda uma vez com marcador em `RegistroAuditoria` e deixa resumo + divergências no log; falha não derruba o startup |
+| Normalização precisa gravar domínio, mas o contexto do bootstrap é central (interceptor lança) | recebe fábrica de contextos por empresa; escrita só tenant-bound, marcador no central (§4.0.5) |
+| Editar/excluir venda fiado parcialmente paga faria o saldo do cliente aumentar | guarda bloqueia `ValorPagoFiado > 0` (§4.0.4) |
 | Normalização pode divergir do `SaldoDevedor` do cadastro | reconciliação registra a divergência e **não** sobrescreve o saldo; o relatório marca o cliente (`TemDivergenciaDeSaldo`) |
 | A Fase 0 **muda números do dashboard** (lucro de fiado parcialmente pago passa a ser reconhecido) | é a correção; testes do dashboard atualizados no mesmo MR, com caso novo explícito |
 | Estorno de venda parcialmente paga precisa devolver só o saldo, não o total | `ReversaoVendaHelper` ajustado e coberto por teste na Fase 0 |
