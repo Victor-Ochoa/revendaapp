@@ -1,0 +1,32 @@
+@page "/relatorios"
+@attribute [Authorize(Policy = RevendaApp.Web.Common.Authorization.Politicas.ApenasEmpresa)]
+@using Microsoft.AspNetCore.Authorization
+@using RevendaApp.Web.Common
+@inject IdentidadeEmpresaService Identidade
+
+<PageTitle>@Identidade.Titulo("Relatórios")</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Relatórios</MudText>
+
+<MudGrid>
+    @foreach (var relatorio in Relatorios)
+    {
+        <MudItem xs="12" sm="6" md="4">
+            <MudPaper Class="pa-4" Style="height:100%">
+                <MudText Typo="Typo.h6">@relatorio.Titulo</MudText>
+                <MudText Typo="Typo.body2" Class="mb-4">@relatorio.Descricao</MudText>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Href="@relatorio.Rota">Abrir</MudButton>
+            </MudPaper>
+        </MudItem>
+    }
+</MudGrid>
+
+@code {
+    private static readonly (string Titulo, string Descricao, string Rota)[] Relatorios =
+    [
+        ("Estoque por dia", "Entradas e saídas de cada produto, dia a dia no mês.", "/relatorios/estoque"),
+        ("Vendas do mês", "Faturamento, lucro, ticket e desconto por dia e por forma de pagamento.", "/relatorios/vendas"),
+        ("Fiado", "Saldo a receber por cliente, faixas de atraso e recebimentos do mês.", "/relatorios/fiado"),
+        ("Vasilhames", "Vasilhames na rua por cliente e produto, e devoluções do mês.", "/relatorios/vasilhames"),
+    ];
+}
