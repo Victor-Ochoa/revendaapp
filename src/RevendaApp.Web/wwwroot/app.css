@@ -117,3 +117,25 @@ h1:focus {
     display: block;
     margin-top: 0.4rem;
 }
+
+/* Matriz "Produtos × dias do mês" (/relatorios/estoque). Com até 31 colunas de dia, a célula
+   "+5 / −2" quebrava em duas linhas e o olho pulava de linha ao atravessar a tabela. Por isso:
+   (a) nada quebra dentro da célula; (b) xadrez claro de fundo (linha ímpar × coluna par e
+   vice-versa) para ancorar a leitura; (c) a coluna do produto fica limpa, porque é a âncora da
+   linha. As regras são globais de propósito: as <td> são geradas pelo MudTable, então CSS
+   escopado do componente não as alcança. */
+.matriz-estoque th,
+.matriz-estoque td {
+    white-space: nowrap;
+}
+
+.matriz-estoque tbody tr:nth-child(odd) > td:nth-child(even):not(:first-child),
+.matriz-estoque tbody tr:nth-child(even) > td:nth-child(odd):not(:first-child) {
+    background-color: rgba(10, 31, 68, 0.035);
+}
+
+/* O Hover do MudTable pinta a linha inteira; sem estas regras o xadrez venceria por especificidade
+   e o realce do mouse desapareceria. */
+.matriz-estoque tbody tr:hover > td {
+    background-color: rgba(10, 31, 68, 0.09) !important;
+}

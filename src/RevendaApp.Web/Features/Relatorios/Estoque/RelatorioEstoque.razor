@@ -62,7 +62,10 @@
             else
             {
                 <div style="overflow-x:auto">
-                    <MudTable Items="_resultado.Produtos" Dense="true" Hover="true" Breakpoint="Breakpoint.None">
+                    @* A classe matriz-estoque (wwwroot/app.css) mantém nome/valores numa linha só e
+                       pinta um xadrez claro: com 31 colunas de dia, o olho precisa da faixa para não
+                       pular de linha. *@
+                    <MudTable Items="_resultado.Produtos" Class="matriz-estoque" Dense="true" Hover="true" Breakpoint="Breakpoint.None">
                         <HeaderContent>
                             <MudTh>Produto</MudTh>
                             @* A cópia local é obrigatória: o RenderFragment do MudTh/MudTd é avaliado

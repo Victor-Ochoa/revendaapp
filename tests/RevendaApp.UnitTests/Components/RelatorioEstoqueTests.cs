@@ -57,6 +57,24 @@ public class RelatorioEstoqueTests
         Assert.DoesNotContain("+", cut.Markup, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// O xadrez e o "tudo numa linha" vêm de regras globais em wwwroot/app.css ancoradas na classe
+    /// <c>matriz-estoque</c>. Se a classe deixar de ser aplicada no contêiner que envolve as
+    /// células, o CSS não alcança nada e a matriz volta a quebrar linha — por isso o contrato é
+    /// testado aqui, não confiado ao navegador.
+    /// </summary>
+    [Fact]
+    public async Task Matriz_aplica_a_classe_de_estilo_no_conteiner_das_celulas()
+    {
+        await using var ctx = CriarContexto(NovembroComDoisDias());
+
+        var cut = ctx.Render<RelatorioEstoque>();
+        cut.WaitForAssertion(() => Assert.Contains("Botijão P13", cut.Markup, StringComparison.Ordinal));
+
+        var matriz = cut.Find(".matriz-estoque");
+        Assert.NotEmpty(matriz.QuerySelectorAll("td"));
+    }
+
     private static BunitContext CriarContexto(RelatorioEstoqueResult resultado)
     {
         var ctx = new BunitContext();
