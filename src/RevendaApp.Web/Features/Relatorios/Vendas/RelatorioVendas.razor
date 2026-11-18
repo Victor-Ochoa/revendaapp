@@ -1,0 +1,120 @@
+@page "/relatorios/vendas"
+@attribute [Authorize(Policy = RevendaApp.Web.Common.Authorization.Politicas.ApenasEmpresa)]
+@rendermode InteractiveServer
+@using Mediator
+@using RevendaApp.Web.Common
+@using RevendaApp.Web.Common.Relatorios
+@using RevendaApp.Web.Features.Relatorios.Shell
+@using RevendaApp.Web.Features.Relatorios.Vendas
+@inject ISender Sender
+
+<PageTitle>Vendas do mês</PageTitle>
+
+<RelatorioShell Titulo="Vendas do mês"
+                Descricao="Faturamento, lucro, ticket e desconto por dia e por forma de pagamento."
+                Mes="_periodo.Mes"
+                Ano="_periodo.Ano"
+                OnPeriodoAlterado="TrocarPeriodoAsync">
+    @if (_resultado is null)
+    {
+        <MudProgressCircular Indeterminate="true" />
+    }
+    else
+    {
+        <MudGrid Class="mb-4">
+            <MudItem xs="6" md="3">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Faturamento</MudText>
+                    <MudText Typo="Typo.h5">@_resultado.FaturamentoTotal.ToString("C")</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="6" md="3">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Lucro</MudText>
+                    <MudText Typo="Typo.h5">@_resultado.LucroTotal.ToString("C")</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="6" md="3">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Ticket médio</MudText>
+                    <MudText Typo="Typo.h5">@_resultado.TicketMedio.ToString("C")</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="6" md="3">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Vendas</MudText>
+                    <MudText Typo="Typo.h5">@_resultado.QuantidadeVendas</MudText>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <MudPaper Class="pa-4 mb-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Faturamento e lucro por dia</MudText>
+            @if (_resultado.PorDia.Count == 0)
+            {
+                <MudText>Nenhuma venda registrada neste mês ainda.</MudText>
+            }
+            else
+            {
+                <MudChart T="double" ChartType="ChartType.Line" ChartSeries="_seriePorDia" ChartLabels="_rotulosDias"
+                          Width="100%" Height="300px" />
+            }
+        </MudPaper>
+
+        <MudPaper Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Por forma de pagamento</MudText>
+            @if (_resultado.PorForma.Count == 0)
+            {
+                <MudText>Nenhuma venda neste mês.</MudText>
+            }
+            else
+            {
+                <MudTable Items="_resultado.PorForma" Dense="true" Hover="true">
+                    <HeaderContent>
+                        <MudTh>Forma</MudTh>
+                        <MudTh Style="text-align:right">Quantidade</MudTh>
+                        <MudTh Style="text-align:right">Valor</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Forma">@context.Forma.Rotulo()</MudTd>
+                        <MudTd DataLabel="Quantidade" Style="text-align:right">@context.Quantidade</MudTd>
+                        <MudTd DataLabel="Valor" Style="text-align:right">@context.Valor.ToString("C")</MudTd>
+                    </RowTemplate>
+                    <FooterContent>
+                        <MudTd><b>Total</b></MudTd>
+                        <MudTd Style="text-align:right"><b>@_resultado.QuantidadeVendas</b></MudTd>
+                        <MudTd Style="text-align:right"><b>@_resultado.FaturamentoTotal.ToString("C")</b></MudTd>
+                    </FooterContent>
+                </MudTable>
+            }
+        </MudPaper>
+    }
+</RelatorioShell>
+
+@code {
+    private PeriodoMes _periodo = PeriodoMes.DoDia(DateTime.UtcNow);
+    private RelatorioVendasResult? _resultado;
+
+    private List<ChartSeries<double>> _seriePorDia = [];
+    private string[] _rotulosDias = [];
+
+    protected override Task OnInitializedAsync() => CarregarAsync();
+
+    private async Task TrocarPeriodoAsync(PeriodoMes periodo)
+    {
+        _periodo = periodo;
+        await CarregarAsync();
+    }
+
+    private async Task CarregarAsync()
+    {
+        _resultado = await Sender.Send(new ObterRelatorioVendasQuery(_periodo));
+
+        _rotulosDias = _resultado.PorDia.Select(d => d.Dia.ToString()).ToArray();
+        _seriePorDia =
+        [
+            new ChartSeries<double> { Name = "Faturamento (R$)", Data = _resultado.PorDia.Select(d => (double)d.Faturamento).ToArray() },
+            new ChartSeries<double> { Name = "Lucro (R$)", Data = _resultado.PorDia.Select(d => (double)d.Lucro).ToArray() },
+        ];
+    }
+}

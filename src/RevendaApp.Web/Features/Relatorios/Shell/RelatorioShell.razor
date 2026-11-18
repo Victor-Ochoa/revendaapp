@@ -1,0 +1,46 @@
+@using RevendaApp.Web.Common.Relatorios
+
+@* Shell comum dos relatórios: título, descrição e seletor de mês/ano. Não declara @rendermode —
+   é renderizado dentro das páginas, que declaram o próprio. *@
+<MudPaper Class="pa-4 mb-4">
+    <div class="d-flex flex-wrap align-center gap-4">
+        <div>
+            <MudText Typo="Typo.h5">@Titulo</MudText>
+            <MudText Typo="Typo.body2">@Descricao</MudText>
+        </div>
+        <MudSpacer />
+        <MudSelect T="int" Label="Mês" Value="Mes" ValueChanged="OnMesChangedAsync" Dense="true" Style="max-width: 160px;">
+            @* A cópia local é obrigatória: o RenderFragment do item é avaliado DEPOIS do laço, então
+               usar `m` direto faria todos os itens verem o valor final (13) e estourar o DateTime. *@
+            @for (var m = 1; m <= 12; m++)
+            {
+                var mesDoItem = m;
+                <MudSelectItem T="int" Value="@mesDoItem">@NomeMes(mesDoItem)</MudSelectItem>
+            }
+        </MudSelect>
+        <MudSelect T="int" Label="Ano" Value="Ano" ValueChanged="OnAnoChangedAsync" Dense="true" Style="max-width: 120px;">
+            @for (var a = DateTime.Now.Year; a >= DateTime.Now.Year - 4; a--)
+            {
+                var anoDoItem = a;
+                <MudSelectItem T="int" Value="@anoDoItem">@anoDoItem</MudSelectItem>
+            }
+        </MudSelect>
+    </div>
+</MudPaper>
+
+@ChildContent
+
+@code {
+    [Parameter, EditorRequired] public string Titulo { get; set; } = "";
+    [Parameter] public string Descricao { get; set; } = "";
+    [Parameter] public int Mes { get; set; }
+    [Parameter] public int Ano { get; set; }
+    [Parameter] public EventCallback<PeriodoMes> OnPeriodoAlterado { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private Task OnMesChangedAsync(int mes) => OnPeriodoAlterado.InvokeAsync(new PeriodoMes(Ano, mes));
+    private Task OnAnoChangedAsync(int ano) => OnPeriodoAlterado.InvokeAsync(new PeriodoMes(ano, Mes));
+
+    private static string NomeMes(int mes) =>
+        new DateTime(2000, mes, 1).ToString("MMMM", System.Globalization.CultureInfo.GetCultureInfo("pt-BR"));
+}

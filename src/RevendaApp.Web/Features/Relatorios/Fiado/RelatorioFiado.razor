@@ -1,0 +1,165 @@
+@page "/relatorios/fiado"
+@attribute [Authorize(Policy = RevendaApp.Web.Common.Authorization.Politicas.ApenasEmpresa)]
+@rendermode InteractiveServer
+@using Mediator
+@using RevendaApp.Web.Common
+@using RevendaApp.Web.Common.Relatorios
+@using RevendaApp.Web.Features.Relatorios.Fiado
+@using RevendaApp.Web.Features.Relatorios.Shell
+@inject ISender Sender
+
+<PageTitle>Fiado</PageTitle>
+
+<RelatorioShell Titulo="Fiado"
+                Descricao="Saldo a receber por cliente, faixas de atraso e recebimentos do mês."
+                Mes="_periodo.Mes"
+                Ano="_periodo.Ano"
+                OnPeriodoAlterado="TrocarPeriodoAsync">
+    @if (_resultado is null)
+    {
+        <MudProgressCircular Indeterminate="true" />
+    }
+    else
+    {
+        <MudGrid Class="mb-4">
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Total a receber</MudText>
+                    <MudText Typo="Typo.h5">@_resultado.TotalAReceber.ToString("C")</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Recebido no mês</MudText>
+                    <MudText Typo="Typo.h5">@_resultado.TotalRecebido.ToString("C")</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Clientes devendo</MudText>
+                    <MudText Typo="Typo.h5">@_resultado.Clientes.Count</MudText>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <MudPaper Class="pa-4 mb-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Faixas de atraso</MudText>
+            <MudTable Items="_resultado.Faixas" Dense="true" Hover="true">
+                <HeaderContent>
+                    <MudTh>Faixa (dias)</MudTh>
+                    <MudTh Style="text-align:right">Clientes</MudTh>
+                    <MudTh Style="text-align:right">Valor</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Faixa">@context.Rotulo</MudTd>
+                    <MudTd DataLabel="Clientes" Style="text-align:right">@context.Clientes</MudTd>
+                    <MudTd DataLabel="Valor" Style="text-align:right">@context.Valor.ToString("C")</MudTd>
+                </RowTemplate>
+            </MudTable>
+        </MudPaper>
+
+        <MudPaper Class="pa-4 mb-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Clientes devedores</MudText>
+            @if (_resultado.Clientes.Count == 0)
+            {
+                <MudText>Nenhum cliente devendo no momento.</MudText>
+            }
+            else
+            {
+                <MudTable Items="_resultado.Clientes" Dense="true" Hover="true">
+                    <HeaderContent>
+                        <MudTh>Cliente</MudTh>
+                        <MudTh>Telefone</MudTh>
+                        <MudTh Style="text-align:right">Saldo</MudTh>
+                        <MudTh Style="text-align:right">Atraso</MudTh>
+                        <MudTh>Venda mais antiga</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Cliente">
+                            @context.Nome
+                            @if (context.TemDivergenciaDeSaldo)
+                            {
+                                <MudTooltip Text="Saldo do cadastro difere das vendas em aberto">
+                                    <MudIcon Icon="@Icons.Material.Filled.Warning" Color="Color.Warning" Size="Size.Small" Class="ml-2" />
+                                </MudTooltip>
+                            }
+                        </MudTd>
+                        <MudTd DataLabel="Telefone">@context.Telefone</MudTd>
+                        <MudTd DataLabel="Saldo" Style="text-align:right">@context.Saldo.ToString("C")</MudTd>
+                        <MudTd DataLabel="Atraso" Style="text-align:right">@context.DiasAtraso dias</MudTd>
+                        <MudTd DataLabel="Venda mais antiga">
+                            @(context.VendaMaisAntigaEmAberto is null
+                                ? "—"
+                                : BrasilTimeZone.ParaBrasilia(context.VendaMaisAntigaEmAberto.Value).ToString("dd/MM/yyyy"))
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        </MudPaper>
+
+        <MudPaper Class="pa-4 mb-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Recebimentos por dia</MudText>
+            @if (_resultado.TotalRecebido == 0m)
+            {
+                <MudText>Nenhum recebimento de fiado neste mês.</MudText>
+            }
+            else
+            {
+                <MudChart T="double" ChartType="ChartType.Line" ChartSeries="_serieRecebimentos" ChartLabels="_rotulosDias"
+                          Width="100%" Height="280px" />
+            }
+        </MudPaper>
+
+        <MudPaper Class="pa-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Recebimentos por forma</MudText>
+            @if (_resultado.RecebimentosPorForma.Count == 0)
+            {
+                <MudText>Nenhum recebimento de fiado neste mês.</MudText>
+            }
+            else
+            {
+                <MudTable Items="_resultado.RecebimentosPorForma" Dense="true" Hover="true">
+                    <HeaderContent>
+                        <MudTh>Forma</MudTh>
+                        <MudTh Style="text-align:right">Valor</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Forma">@context.Forma.Rotulo()</MudTd>
+                        <MudTd DataLabel="Valor" Style="text-align:right">@context.Valor.ToString("C")</MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        </MudPaper>
+    }
+</RelatorioShell>
+
+@code {
+    private PeriodoMes _periodo = PeriodoMes.DoDia(DateTime.UtcNow);
+    private RelatorioFiadoResult? _resultado;
+
+    private List<ChartSeries<double>> _serieRecebimentos = [];
+    private string[] _rotulosDias = [];
+
+    protected override Task OnInitializedAsync() => CarregarAsync();
+
+    private async Task TrocarPeriodoAsync(PeriodoMes periodo)
+    {
+        _periodo = periodo;
+        await CarregarAsync();
+    }
+
+    private async Task CarregarAsync()
+    {
+        _resultado = await Sender.Send(new ObterRelatorioFiadoQuery(_periodo));
+
+        _rotulosDias = _resultado.RecebimentosPorDia.Select(d => d.Dia.ToString()).ToArray();
+        _serieRecebimentos =
+        [
+            new ChartSeries<double>
+            {
+                Name = "Recebido (R$)",
+                Data = _resultado.RecebimentosPorDia.Select(d => (double)d.Valor).ToArray(),
+            },
+        ];
+    }
+}

@@ -96,6 +96,18 @@ public sealed class DatabaseFixture : IAsyncLifetime
         await _app.StartAsync(cancellationToken).WaitAsync(TimeSpan.FromSeconds(150), cancellationToken);
         await _app.ResourceNotifications.WaitForResourceHealthyAsync("revendaapp", cancellationToken).WaitAsync(TimeSpan.FromSeconds(150), cancellationToken);
 
+        // Espera o bootstrap do `web` terminar. `StartAsync` sobe TODOS os recursos do AppHost,
+        // inclusive o processo da aplicação, que escreve no MESMO banco (migrações, normalização do
+        // fiado legado — grava um marcador em `RegistrosAuditoria` — e seed de demonstração).
+        // O `WaitForResourceHealthyAsync("web")` NÃO serve aqui: em Production o `/health` nem é
+        // mapeado, e o Aspire considera o projeto saudável assim que o processo sobe — o bootstrap
+        // segue rodando. Sem esta espera, o `ResetDatabaseAsync()` do primeiro teste trunca as
+        // tabelas enquanto o bootstrap ainda grava: `TRUNCATE` e `INSERT` disputam locks (deadlock)
+        // e o marcador gravado depois do reset vira registro fantasma nos testes de auditoria.
+        // O Kestrel só começa a escutar DEPOIS do bloco de bootstrap, então responder a qualquer
+        // requisição é o sinal de prontidão real.
+        await AguardarWebProntaAsync(cancellationToken);
+
         _connectionString = await _app.GetConnectionStringAsync("revendaapp", cancellationToken)
             ?? throw new InvalidOperationException("Não foi possível resolver a connection string do recurso 'revendaapp'.");
     }
@@ -103,6 +115,61 @@ public sealed class DatabaseFixture : IAsyncLifetime
     public async Task DisposeAsync()
     {
         await _app.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Espera o processo <c>web</c> terminar o bootstrap (migração, normalização do fiado legado,
+    /// seed) e começar a aceitar requisições.
+    /// </summary>
+    /// <remarks>
+    /// O health check do Aspire para um projeto só atesta que o processo subiu — o bootstrap roda
+    /// depois e escreve no mesmo banco que os testes limpam. O Kestrel abre a porta no fim do
+    /// bootstrap, então uma resposta HTTP (qualquer status) prova que as escritas de bootstrap já
+    /// aconteceram. O caminho <c>/</c> é usado de propósito: qualquer código de resposta serve, e
+    /// não dependemos de <c>/health</c>, que só existe em Development.
+    /// </remarks>
+    private async Task AguardarWebProntaAsync(CancellationToken cancellationToken)
+    {
+        // O endpoint `http` NÃO serve aqui: o `UseHttpsRedirection` responde 307 para o `https`, o
+        // HttpClient segue o redirect por padrão e aí esbarra no certificado de desenvolvimento —
+        // que é confiável na máquina do dev mas NÃO no runner do CI (UntrustedRoot). Resultado: a
+        // espera falhava só no CI, depois de 150s de retentativa. Falamos https direto e aceitamos
+        // o cert de dev, mesmo padrão de `WebAppFixture.CreateClient()`.
+        var endereco = _app.GetEndpoint("web", "https");
+        using var http = new HttpClient(new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
+        })
+        {
+            BaseAddress = endereco,
+            Timeout = TimeSpan.FromSeconds(10),
+        };
+
+        var limite = DateTime.UtcNow.AddSeconds(150);
+        while (true)
+        {
+            try
+            {
+                using var resposta = await http.GetAsync("/", cancellationToken);
+                return;
+            }
+            catch (Exception excecao) when ((excecao is HttpRequestException or TaskCanceledException)
+                                            && DateTime.UtcNow < limite)
+            {
+                // Ainda não escutando (bootstrap em andamento) ou porta aberta sem resposta.
+                // A condição de prazo fica no filtro: se ele estourar, a exceção original sobe em
+                // vez de ser engolida, preservando a causa real da falha.
+            }
+
+            if (DateTime.UtcNow >= limite)
+            {
+                throw new InvalidOperationException(
+                    $"O recurso 'web' não começou a responder em {endereco} dentro do prazo de 150s.");
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken);
+        }
     }
 
     /// <summary>

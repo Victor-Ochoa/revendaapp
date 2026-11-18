@@ -1,0 +1,188 @@
+@page "/relatorios/estoque"
+@attribute [Authorize(Policy = RevendaApp.Web.Common.Authorization.Politicas.ApenasEmpresa)]
+@rendermode InteractiveServer
+@using Mediator
+@using RevendaApp.Web.Common.Relatorios
+@using RevendaApp.Web.Features.Relatorios.Estoque
+@using RevendaApp.Web.Features.Relatorios.Shell
+@inject ISender Sender
+
+<PageTitle>Estoque por dia</PageTitle>
+
+<RelatorioShell Titulo="Estoque por dia"
+                Descricao="Entradas e saídas de cada produto, dia a dia no mês."
+                Mes="_periodo.Mes"
+                Ano="_periodo.Ano"
+                OnPeriodoAlterado="TrocarPeriodoAsync">
+    @if (_resultado is null)
+    {
+        <MudProgressCircular Indeterminate="true" />
+    }
+    else
+    {
+        <MudGrid Class="mb-4">
+            <MudItem xs="6" md="3">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Entradas no mês</MudText>
+                    <MudText Typo="Typo.h5">@_totalEntradas</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="6" md="3">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Saídas no mês</MudText>
+                    <MudText Typo="Typo.h5">@_totalSaidas</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="6" md="3">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Movimento líquido</MudText>
+                    <MudText Typo="Typo.h5">@_movimentoLiquido</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="6" md="3">
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.caption">Ajustes no mês</MudText>
+                    <MudText Typo="Typo.h5">@_resultado.Ajustes.Count</MudText>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <MudPaper Class="pa-4 mb-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Movimento por dia</MudText>
+            <MudChart T="int" ChartType="ChartType.Line" ChartSeries="_seriePorDia" ChartLabels="_rotulosDias"
+                      Width="100%" Height="300px" />
+        </MudPaper>
+
+        <MudPaper Class="pa-4 mb-4">
+            <MudText Typo="Typo.h6" Class="mb-2">Produtos × dias do mês</MudText>
+            @if (_resultado.Produtos.Count == 0)
+            {
+                <MudText>Nenhum produto cadastrado ainda.</MudText>
+            }
+            else
+            {
+                <div style="overflow-x:auto">
+                    @* A classe matriz-estoque (wwwroot/app.css) mantém nome/valores numa linha só e
+                       pinta um xadrez claro: com 31 colunas de dia, o olho precisa da faixa para não
+                       pular de linha. *@
+                    <MudTable Items="_resultado.Produtos" Class="matriz-estoque" Dense="true" Hover="true" Breakpoint="Breakpoint.None">
+                        <HeaderContent>
+                            <MudTh>Produto</MudTh>
+                            @* A cópia local é obrigatória: o RenderFragment do MudTh/MudTd é avaliado
+                               DEPOIS do laço, então `dia` direto chegaria ao fim do range (DiasNoMes+1)
+                               e estouraria o índice em CelulaDoDia. *@
+                            @for (var dia = 1; dia <= _resultado.Periodo.DiasNoMes; dia++)
+                            {
+                                var diaDoCabecalho = dia;
+                                <MudTh Style="text-align:center">@diaDoCabecalho</MudTh>
+                            }
+                            <MudTh Style="text-align:right">Entradas</MudTh>
+                            <MudTh Style="text-align:right">Saídas</MudTh>
+                            <MudTh Style="text-align:right">Líquido</MudTh>
+                            <MudTh Style="text-align:right">Estoque atual</MudTh>
+                            <MudTh Style="text-align:right">Ajustes</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="Produto">
+                                @context.Nome
+                                @if (!context.Ativo)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Color="Color.Default" Class="ml-2">Inativo</MudChip>
+                                }
+                            </MudTd>
+                            @for (var dia = 1; dia <= _resultado.Periodo.DiasNoMes; dia++)
+                            {
+                                var diaDaCelula = dia;
+                                <MudTd Style="text-align:center">@CelulaDoDia(context, diaDaCelula)</MudTd>
+                            }
+                            <MudTd Style="text-align:right">@context.TotalEntradas</MudTd>
+                            <MudTd Style="text-align:right">@context.TotalSaidas</MudTd>
+                            <MudTd Style="text-align:right">@context.MovimentoLiquido</MudTd>
+                            <MudTd Style="text-align:right">@context.EstoqueAtual</MudTd>
+                            <MudTd Style="text-align:right">@context.QuantidadeAjustes</MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                </div>
+            }
+        </MudPaper>
+
+        <MudExpansionPanel Text="Ajustes do mês" Dense="true">
+            @if (_resultado.Ajustes.Count == 0)
+            {
+                <MudText>Nenhum ajuste de estoque neste mês.</MudText>
+            }
+            else
+            {
+                <MudTable Items="_resultado.Ajustes" Dense="true">
+                    <HeaderContent>
+                        <MudTh>Produto</MudTh>
+                        <MudTh>Dia</MudTh>
+                        <MudTh>Novo total</MudTh>
+                        <MudTh>Motivo</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Produto">@context.ProdutoNome</MudTd>
+                        <MudTd DataLabel="Dia">@context.Dia</MudTd>
+                        <MudTd DataLabel="Novo total">@context.NovoTotal</MudTd>
+                        <MudTd DataLabel="Motivo">@context.Motivo</MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        </MudExpansionPanel>
+    }
+</RelatorioShell>
+
+@code {
+    private PeriodoMes _periodo = PeriodoMes.DoDia(DateTime.UtcNow);
+    private RelatorioEstoqueResult? _resultado;
+
+    private List<ChartSeries<int>> _seriePorDia = [];
+    private string[] _rotulosDias = [];
+
+    private int _totalEntradas;
+    private int _totalSaidas;
+    private int _movimentoLiquido;
+
+    protected override Task OnInitializedAsync() => CarregarAsync();
+
+    private async Task TrocarPeriodoAsync(PeriodoMes periodo)
+    {
+        _periodo = periodo;
+        await CarregarAsync();
+    }
+
+    private async Task CarregarAsync()
+    {
+        _resultado = await Sender.Send(new ObterRelatorioEstoqueQuery(_periodo));
+        _totalEntradas = _resultado.Produtos.Sum(p => p.TotalEntradas);
+        _totalSaidas = _resultado.Produtos.Sum(p => p.TotalSaidas);
+        _movimentoLiquido = _totalEntradas - _totalSaidas;
+
+        _rotulosDias = _resultado.PorDia.Select(d => d.Dia.ToString()).ToArray();
+        _seriePorDia =
+        [
+            new ChartSeries<int> { Name = "Entradas", Data = _resultado.PorDia.Select(d => d.Entradas).ToArray() },
+            new ChartSeries<int> { Name = "Saídas", Data = _resultado.PorDia.Select(d => d.Saidas).ToArray() },
+        ];
+    }
+
+    /// <summary>Célula do dia: "+N / −N", ou vazio quando o dia não teve movimento.</summary>
+    private static string CelulaDoDia(ProdutoNoMes produto, int dia)
+    {
+        var indice = dia - 1;
+        var entradas = produto.EntradasPorDia[indice];
+        var saidas = produto.SaidasPorDia[indice];
+
+        if (entradas == 0 && saidas == 0)
+        {
+            return "";
+        }
+
+        if (entradas > 0 && saidas > 0)
+        {
+            return $"+{entradas} / −{saidas}";
+        }
+
+        return entradas > 0 ? $"+{entradas}" : $"−{saidas}";
+    }
+}

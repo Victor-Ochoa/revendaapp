@@ -43,6 +43,15 @@ public class Venda
     /// </summary>
     public DateTime? ExcluidaEm { get; private set; }
 
+    /// <summary>
+    /// Quanto do valor desta venda fiado já foi pago. Alocado por pagamento (parcial ou total),
+    /// em ordem FIFO. Zero em vendas que não são fiado e em fiado legado anterior à coluna.
+    /// </summary>
+    public decimal ValorPagoFiado { get; private set; }
+
+    /// <summary>Quanto ainda falta pagar desta venda fiado.</summary>
+    public decimal SaldoFiado => ValorTotal - ValorPagoFiado;
+
     public IReadOnlyCollection<ItemVenda> Itens => _itens.AsReadOnly();
 
     /// <summary>Soma dos itens antes do desconto.</summary>
@@ -86,6 +95,61 @@ public class Venda
     public void Excluir(DateTime? agora = null) => ExcluidaEm ??= agora ?? DateTime.UtcNow;
 
     /// <summary>
+    /// Aloca um pagamento nesta venda fiado em aberto e quita quando a alocação cobre o total.
+    /// Devolve o valor efetivamente alocado (nunca maior que <see cref="SaldoFiado"/>).
+    /// </summary>
+    /// <remarks>
+    /// Nunca lança para venda que não é fiado, já quitada ou excluída: devolve zero sem efeito.
+    /// É o que permite ao chamador consumir o pagamento em FIFO sem checar cada venda antes.
+    /// </remarks>
+    public decimal AbaterFiado(decimal valor)
+    {
+        if (valor <= 0 || ExcluidaEm is not null)
+        {
+            return 0m;
+        }
+
+        if (FormaPagamento != FormaPagamento.Fiado || Status != VendaStatus.FiadoAberto)
+        {
+            return 0m;
+        }
+
+        var alocado = Math.Min(valor, SaldoFiado);
+        if (alocado <= 0m)
+        {
+            return 0m;
+        }
+
+        ValorPagoFiado += alocado;
+        if (SaldoFiado == 0m)
+        {
+            Status = VendaStatus.FiadoQuitado;
+        }
+
+        return alocado;
+    }
+
+    /// <summary>
+    /// Define o total já pago desta venda fiado. Usado pela normalização do legado, que replica o
+    /// histórico de pagamentos: é um <b>set</b> absoluto, não um acréscimo, para a operação ser
+    /// idempotente. Quita a venda quando o valor cobre o total.
+    /// </summary>
+    public void DefinirValorPagoFiado(decimal valor)
+    {
+        if (FormaPagamento != FormaPagamento.Fiado)
+        {
+            return;
+        }
+
+        ValorPagoFiado = Math.Clamp(valor, 0m, ValorTotal);
+
+        if (SaldoFiado == 0m && Status == VendaStatus.FiadoAberto)
+        {
+            Status = VendaStatus.FiadoQuitado;
+        }
+    }
+
+    /// <summary>
     /// Marca uma venda fiado como quitada (usada quando um pagamento do cliente abate o saldo
     /// devedor). Não tem efeito em vendas que não sejam fiado.
     /// </summary>
@@ -93,6 +157,7 @@ public class Venda
     {
         if (FormaPagamento == FormaPagamento.Fiado && Status == VendaStatus.FiadoAberto)
         {
+            ValorPagoFiado = ValorTotal;
             Status = VendaStatus.FiadoQuitado;
         }
     }

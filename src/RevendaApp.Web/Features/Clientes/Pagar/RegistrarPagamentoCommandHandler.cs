@@ -51,20 +51,11 @@ public sealed class RegistrarPagamentoCommandHandler(AppDbContext db, ITenantCon
                 break;
             }
 
-            // FIFO estrito: a venda mais antiga em aberto precisa ser coberta inteira antes de
-            // qualquer venda posterior ser marcada como quitada. Sem este `break`, um pagamento
-            // parcial que não fecha a dívida antiga "pulava" para a próxima venda e a marcava
-            // FiadoQuitado — reconhecendo lucro de uma venda ainda não paga no dashboard, além de
-            // deixar a venda mais antiga em aberto com a mais nova quitada.
-            // Lacuna conhecida: a alocação é tudo-ou-nada por venda, então um pagamento que não
-            // cobre o total de uma venda nunca a marca como quitada (não há rateio parcial).
-            if (valorPago < venda.ValorTotal)
-            {
-                break;
-            }
-
-            venda.MarcarFiadoQuitado();
-            valorPago -= venda.ValorTotal;
+            // FIFO com alocação parcial: cada venda absorve o que o pagamento cobre do seu saldo.
+            // O excedente segue para a próxima venda; o que sobrar ao fim não é alocado a ninguém
+            // (crédito a favor do cliente não é modelado nesta entrega). Antes, a alocação era
+            // tudo-ou-nada e um pagamento parcial não deixava rastro em nenhuma venda.
+            valorPago -= venda.AbaterFiado(valorPago);
         }
 
         // O token `xmin` do Cliente detecta pagamento concorrente sobre o mesmo saldo devedor; o

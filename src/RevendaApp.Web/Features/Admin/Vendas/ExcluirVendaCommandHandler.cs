@@ -31,7 +31,6 @@ public sealed class ExcluirVendaCommandHandler(
 
         var venda = await db.Vendas
             .Include(v => v.Itens)
-            .Include(v => v.Cliente)
             .FirstOrDefaultAsync(v => v.Id == command.VendaId, cancellationToken)
             ?? throw new InvalidOperationException("A venda a excluir não foi encontrada.");
 
@@ -40,15 +39,12 @@ public sealed class ExcluirVendaCommandHandler(
             throw new InvalidOperationException("A venda já foi excluída.");
         }
 
-        var cliente = venda.Cliente!;
-
-        // Regra fiado: bloquear se o saldo devedor não cobre a venda (já quitada). Se cobre
-        // (saldo "negativo"/em aberto), o estorno pode ocorrer com segurança.
-        if (venda.FormaPagamento == FormaPagamento.Fiado
-            && cliente.SaldoDevedor < venda.ValorTotal)
+        // Fiado com QUALQUER valor já pago não pode ser excluído: o estorno devolveria só o SaldoFiado
+        // e o dinheiro recebido ficaria órfão, sem a venda que o justificava.
+        if (venda.FormaPagamento == FormaPagamento.Fiado && venda.ValorPagoFiado > 0m)
         {
             throw new InvalidOperationException(
-                "Não é possível excluir: o saldo devedor do cliente não cobre o valor desta venda fiado (já quitada).");
+                "Não é possível excluir: esta venda fiado já teve pagamento e o estorno não devolveria o valor recebido.");
         }
 
         // Estorna saldo devedor (fiado) e estoque; remove pagamento de venda paga no ato.

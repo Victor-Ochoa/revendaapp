@@ -23,6 +23,9 @@ public class VendaConfiguration : IEntityTypeConfiguration<Venda>
         builder.Property(v => v.FormaPagamento).HasConversion<string>().HasMaxLength(30);
         builder.Property(v => v.Desconto).HasPrecision(18, 2);
         builder.Property(v => v.ValorEntrega).HasPrecision(18, 2);
+
+        // Quanto desta venda fiado já foi pago (alocação FIFO por pagamento). Não é calculada.
+        builder.Property(v => v.ValorPagoFiado).HasPrecision(18, 2);
         builder.Property(v => v.Status).HasConversion<string>().HasMaxLength(30);
 
         // VendedorId é apenas registro (guid do usuário autenticado que registrou a venda), sem FK.
@@ -35,6 +38,7 @@ public class VendaConfiguration : IEntityTypeConfiguration<Venda>
         builder.Ignore(v => v.ValorBruto);
         builder.Ignore(v => v.ValorTotal);
         builder.Ignore(v => v.LucroTotal);
+        builder.Ignore(v => v.SaldoFiado);
 
         builder.HasOne(v => v.Cliente)
             .WithMany()

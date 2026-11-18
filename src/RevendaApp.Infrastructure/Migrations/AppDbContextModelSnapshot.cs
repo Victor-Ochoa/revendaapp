@@ -17,7 +17,7 @@ namespace RevendaApp.Infrastructure.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.11")
+                .HasAnnotation("ProductVersion", "10.0.14")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -301,13 +301,13 @@ namespace RevendaApp.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("EmpresaId");
-
                     b.HasIndex("ProdutoId");
 
                     b.HasIndex("VendaId");
 
                     b.HasIndex("ClienteId", "ProdutoId");
+
+                    b.HasIndex("EmpresaId", "DevolvidoEm");
 
                     b.ToTable("EmprestimosVasilhames", (string)null);
                 });
@@ -352,9 +352,9 @@ namespace RevendaApp.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("EmpresaId");
-
                     b.HasIndex("ProdutoId");
+
+                    b.HasIndex("EmpresaId", "Data");
 
                     b.ToTable("HistoricosEstoque", (string)null);
                 });
@@ -430,9 +430,9 @@ namespace RevendaApp.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("EmpresaId");
-
                     b.HasIndex("ProdutoId");
+
+                    b.HasIndex("EmpresaId", "Data");
 
                     b.ToTable("MovimentacoesEstoque", (string)null);
                 });
@@ -693,6 +693,10 @@ namespace RevendaApp.Infrastructure.Migrations
                         .HasColumnType("character varying(30)");
 
                     b.Property<decimal>("ValorEntrega")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("ValorPagoFiado")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
 
