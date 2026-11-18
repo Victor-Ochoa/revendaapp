@@ -130,8 +130,21 @@ public sealed class DatabaseFixture : IAsyncLifetime
     /// </remarks>
     private async Task AguardarWebProntaAsync(CancellationToken cancellationToken)
     {
-        var endereco = _app.GetEndpoint("web", "http");
-        using var http = new HttpClient { BaseAddress = endereco, Timeout = TimeSpan.FromSeconds(10) };
+        // O endpoint `http` NÃO serve aqui: o `UseHttpsRedirection` responde 307 para o `https`, o
+        // HttpClient segue o redirect por padrão e aí esbarra no certificado de desenvolvimento —
+        // que é confiável na máquina do dev mas NÃO no runner do CI (UntrustedRoot). Resultado: a
+        // espera falhava só no CI, depois de 150s de retentativa. Falamos https direto e aceitamos
+        // o cert de dev, mesmo padrão de `WebAppFixture.CreateClient()`.
+        var endereco = _app.GetEndpoint("web", "https");
+        using var http = new HttpClient(new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
+        })
+        {
+            BaseAddress = endereco,
+            Timeout = TimeSpan.FromSeconds(10),
+        };
 
         var limite = DateTime.UtcNow.AddSeconds(150);
         while (true)
@@ -141,13 +154,12 @@ public sealed class DatabaseFixture : IAsyncLifetime
                 using var resposta = await http.GetAsync("/", cancellationToken);
                 return;
             }
-            catch (HttpRequestException) when (DateTime.UtcNow < limite)
+            catch (Exception excecao) when ((excecao is HttpRequestException or TaskCanceledException)
+                                            && DateTime.UtcNow < limite)
             {
-                // Ainda não escutando: bootstrap em andamento.
-            }
-            catch (TaskCanceledException) when (DateTime.UtcNow < limite)
-            {
-                // Timeout da requisição com a porta aberta mas sem resposta: tenta de novo.
+                // Ainda não escutando (bootstrap em andamento) ou porta aberta sem resposta.
+                // A condição de prazo fica no filtro: se ele estourar, a exceção original sobe em
+                // vez de ser engolida, preservando a causa real da falha.
             }
 
             if (DateTime.UtcNow >= limite)
