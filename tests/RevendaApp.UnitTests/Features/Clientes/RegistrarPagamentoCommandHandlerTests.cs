@@ -82,7 +82,7 @@ public class RegistrarPagamentoCommandHandlerTests
     }
 
     [Fact]
-    public async Task Handle_NaoDeveMarcarVendaQuitada_QuandoPagamentoForParcial()
+    public async Task Handle_PagamentoParcial_DeveAlocarNaVendaSemQuitar()
     {
         var (db, cliente) = await CriarClienteAsync(saldoDevedor: 100m);
         var venda = await RegistrarVendaFiadoAsync(db, cliente.Id, valorItem: 100m);
@@ -94,7 +94,57 @@ public class RegistrarPagamentoCommandHandlerTests
             CancellationToken.None);
 
         var vendaAtualizada = await db.Vendas.FindAsync(venda.Id);
-        Assert.Equal(VendaStatus.FiadoAberto, vendaAtualizada!.Status);
+        Assert.Equal(40m, vendaAtualizada!.ValorPagoFiado);
+        Assert.Equal(60m, vendaAtualizada.SaldoFiado);
+        Assert.Equal(VendaStatus.FiadoAberto, vendaAtualizada.Status);
+        Assert.Equal(60m, (await db.Clientes.FindAsync(cliente.Id))!.SaldoDevedor);
+    }
+
+    /// <summary>
+    /// Pagamento que cobre a venda antiga e sobra para a seguinte: a antiga quita, a nova recebe
+    /// a parcela e continua aberta. Antes, o pagamento era tudo-ou-nada por venda e o parcial
+    /// não deixava rastro em nenhuma.
+    /// </summary>
+    [Fact]
+    public async Task Handle_PagamentoQueCobreDuasVendas_DeveQuitarAAntigaEAbaterASeguinte()
+    {
+        var (db, cliente) = await CriarClienteAsync(saldoDevedor: 100m);
+        var vendaAntiga = await RegistrarVendaFiadoAsync(db, cliente.Id, valorItem: 60m, dataHora: new DateTime(2026, 1, 1, 10, 0, 0, DateTimeKind.Utc));
+        var vendaNova = await RegistrarVendaFiadoAsync(db, cliente.Id, valorItem: 40m, dataHora: new DateTime(2026, 1, 2, 10, 0, 0, DateTimeKind.Utc));
+        var handler = new RegistrarPagamentoCommandHandler(db, TenantTeste.Contexto(), new VendasAtualizadasNotifier());
+
+        await handler.Handle(
+            new RegistrarPagamentoCommand(cliente.Id, 70m, FormaPagamento.Dinheiro),
+            CancellationToken.None);
+
+        var antiga = await db.Vendas.FindAsync(vendaAntiga.Id);
+        var nova = await db.Vendas.FindAsync(vendaNova.Id);
+        Assert.Equal(VendaStatus.FiadoQuitado, antiga!.Status);
+        Assert.Equal(10m, nova!.ValorPagoFiado);
+        Assert.Equal(30m, nova.SaldoFiado);
+        Assert.Equal(VendaStatus.FiadoAberto, nova.Status);
+        Assert.Equal(30m, (await db.Clientes.FindAsync(cliente.Id))!.SaldoDevedor);
+    }
+
+    /// <summary>
+    /// O excedente não é alocado em nenhuma venda nem vira crédito: o saldo do cliente para em
+    /// zero (comportamento já existente) e a venda fica com o valor total pago.
+    /// </summary>
+    [Fact]
+    public async Task Handle_PagamentoMaiorQueADivida_NaoDeveAlocarOExcedente()
+    {
+        var (db, cliente) = await CriarClienteAsync(saldoDevedor: 100m);
+        var venda = await RegistrarVendaFiadoAsync(db, cliente.Id, valorItem: 100m);
+        var handler = new RegistrarPagamentoCommandHandler(db, TenantTeste.Contexto(), new VendasAtualizadasNotifier());
+
+        await handler.Handle(
+            new RegistrarPagamentoCommand(cliente.Id, 150m, FormaPagamento.Dinheiro),
+            CancellationToken.None);
+
+        var vendaAtualizada = await db.Vendas.FindAsync(venda.Id);
+        Assert.Equal(100m, vendaAtualizada!.ValorPagoFiado);
+        Assert.Equal(0m, vendaAtualizada.SaldoFiado);
+        Assert.Equal(0m, (await db.Clientes.FindAsync(cliente.Id))!.SaldoDevedor);
     }
 
     [Fact]
