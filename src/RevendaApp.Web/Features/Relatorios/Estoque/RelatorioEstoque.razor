@@ -20,25 +20,53 @@
     }
     else
     {
+        <MudPaper Class="pa-4 mb-4">
+            <div class="d-flex flex-wrap align-center gap-4">
+                <MudText Typo="Typo.body2">Mostrar</MudText>
+                <MudToggleGroup T="FiltroMovimentoEstoque" Value="_filtro" ValueChanged="TrocarFiltroAsync"
+                                Size="Size.Small" Color="Color.Primary" CheckMark="true">
+                    <MudToggleItem T="FiltroMovimentoEstoque" Value="FiltroMovimentoEstoque.Ambos">Entradas e saídas</MudToggleItem>
+                    <MudToggleItem T="FiltroMovimentoEstoque" Value="FiltroMovimentoEstoque.Entradas">Somente entradas</MudToggleItem>
+                    <MudToggleItem T="FiltroMovimentoEstoque" Value="FiltroMovimentoEstoque.Saidas">Somente saídas</MudToggleItem>
+                </MudToggleGroup>
+            </div>
+            @if (_filtro != FiltroMovimentoEstoque.Saidas)
+            {
+                <MudText Typo="Typo.caption" Class="d-block mt-2">
+                    Entradas = compras na distribuidora. O estorno de venda editada ou excluída
+                    não entra nesta conta.
+                </MudText>
+            }
+        </MudPaper>
+
         <MudGrid Class="mb-4">
-            <MudItem xs="6" md="3">
-                <MudPaper Class="pa-4">
-                    <MudText Typo="Typo.caption">Entradas no mês</MudText>
-                    <MudText Typo="Typo.h5">@_totalEntradas</MudText>
-                </MudPaper>
-            </MudItem>
-            <MudItem xs="6" md="3">
-                <MudPaper Class="pa-4">
-                    <MudText Typo="Typo.caption">Saídas no mês</MudText>
-                    <MudText Typo="Typo.h5">@_totalSaidas</MudText>
-                </MudPaper>
-            </MudItem>
-            <MudItem xs="6" md="3">
-                <MudPaper Class="pa-4">
-                    <MudText Typo="Typo.caption">Movimento líquido</MudText>
-                    <MudText Typo="Typo.h5">@_movimentoLiquido</MudText>
-                </MudPaper>
-            </MudItem>
+            @if (_filtro != FiltroMovimentoEstoque.Saidas)
+            {
+                <MudItem xs="6" md="3">
+                    <MudPaper Class="pa-4">
+                        <MudText Typo="Typo.caption">Entradas no mês</MudText>
+                        <MudText Typo="Typo.h5">@_totalEntradas</MudText>
+                    </MudPaper>
+                </MudItem>
+            }
+            @if (_filtro != FiltroMovimentoEstoque.Entradas)
+            {
+                <MudItem xs="6" md="3">
+                    <MudPaper Class="pa-4">
+                        <MudText Typo="Typo.caption">Saídas no mês</MudText>
+                        <MudText Typo="Typo.h5">@_totalSaidas</MudText>
+                    </MudPaper>
+                </MudItem>
+            }
+            @if (_filtro == FiltroMovimentoEstoque.Ambos)
+            {
+                <MudItem xs="6" md="3">
+                    <MudPaper Class="pa-4">
+                        <MudText Typo="Typo.caption">Movimento líquido</MudText>
+                        <MudText Typo="Typo.h5">@_movimentoLiquido</MudText>
+                    </MudPaper>
+                </MudItem>
+            }
             <MudItem xs="6" md="3">
                 <MudPaper Class="pa-4">
                     <MudText Typo="Typo.caption">Ajustes no mês</MudText>
@@ -76,9 +104,18 @@
                                 var diaDoCabecalho = dia;
                                 <MudTh Style="text-align:center">@diaDoCabecalho</MudTh>
                             }
-                            <MudTh Style="text-align:right">Entradas</MudTh>
-                            <MudTh Style="text-align:right">Saídas</MudTh>
-                            <MudTh Style="text-align:right">Líquido</MudTh>
+                            @if (_filtro != FiltroMovimentoEstoque.Saidas)
+                            {
+                                <MudTh Style="text-align:right">Entradas</MudTh>
+                            }
+                            @if (_filtro != FiltroMovimentoEstoque.Entradas)
+                            {
+                                <MudTh Style="text-align:right">Saídas</MudTh>
+                            }
+                            @if (_filtro == FiltroMovimentoEstoque.Ambos)
+                            {
+                                <MudTh Style="text-align:right">Líquido</MudTh>
+                            }
                             <MudTh Style="text-align:right">Estoque atual</MudTh>
                             <MudTh Style="text-align:right">Ajustes</MudTh>
                         </HeaderContent>
@@ -95,9 +132,18 @@
                                 var diaDaCelula = dia;
                                 <MudTd Style="text-align:center">@CelulaDoDia(context, diaDaCelula)</MudTd>
                             }
-                            <MudTd Style="text-align:right">@context.TotalEntradas</MudTd>
-                            <MudTd Style="text-align:right">@context.TotalSaidas</MudTd>
-                            <MudTd Style="text-align:right">@context.MovimentoLiquido</MudTd>
+                            @if (_filtro != FiltroMovimentoEstoque.Saidas)
+                            {
+                                <MudTd Style="text-align:right">@context.TotalEntradas</MudTd>
+                            }
+                            @if (_filtro != FiltroMovimentoEstoque.Entradas)
+                            {
+                                <MudTd Style="text-align:right">@context.TotalSaidas</MudTd>
+                            }
+                            @if (_filtro == FiltroMovimentoEstoque.Ambos)
+                            {
+                                <MudTd Style="text-align:right">@context.MovimentoLiquido</MudTd>
+                            }
                             <MudTd Style="text-align:right">@context.EstoqueAtual</MudTd>
                             <MudTd Style="text-align:right">@context.QuantidadeAjustes</MudTd>
                         </RowTemplate>
@@ -134,6 +180,7 @@
 
 @code {
     private PeriodoMes _periodo = PeriodoMes.DoDia(DateTime.UtcNow);
+    private FiltroMovimentoEstoque _filtro = FiltroMovimentoEstoque.Ambos;
     private RelatorioEstoqueResult? _resultado;
 
     private List<ChartSeries<int>> _seriePorDia = [];
@@ -151,19 +198,39 @@
         await CarregarAsync();
     }
 
+    private async Task TrocarFiltroAsync(FiltroMovimentoEstoque filtro)
+    {
+        if (_filtro == filtro)
+        {
+            return;
+        }
+
+        _filtro = filtro;
+        await CarregarAsync();
+    }
+
     private async Task CarregarAsync()
     {
-        _resultado = await Sender.Send(new ObterRelatorioEstoqueQuery(_periodo));
+        _resultado = await Sender.Send(new ObterRelatorioEstoqueQuery(_periodo, _filtro));
         _totalEntradas = _resultado.Produtos.Sum(p => p.TotalEntradas);
         _totalSaidas = _resultado.Produtos.Sum(p => p.TotalSaidas);
         _movimentoLiquido = _totalEntradas - _totalSaidas;
 
         _rotulosDias = _resultado.PorDia.Select(d => d.Dia.ToString()).ToArray();
-        _seriePorDia =
-        [
-            new ChartSeries<int> { Name = "Entradas", Data = _resultado.PorDia.Select(d => d.Entradas).ToArray() },
-            new ChartSeries<int> { Name = "Saídas", Data = _resultado.PorDia.Select(d => d.Saidas).ToArray() },
-        ];
+
+        // Só as séries visíveis: o filtro é uma lente, não uma linha zerada no gráfico.
+        var series = new List<ChartSeries<int>>();
+        if (_filtro != FiltroMovimentoEstoque.Saidas)
+        {
+            series.Add(new ChartSeries<int> { Name = "Entradas", Data = _resultado.PorDia.Select(d => d.Entradas).ToArray() });
+        }
+
+        if (_filtro != FiltroMovimentoEstoque.Entradas)
+        {
+            series.Add(new ChartSeries<int> { Name = "Saídas", Data = _resultado.PorDia.Select(d => d.Saidas).ToArray() });
+        }
+
+        _seriePorDia = series;
     }
 
     /// <summary>Célula do dia: "+N / −N", ou vazio quando o dia não teve movimento.</summary>
