@@ -44,7 +44,8 @@ public static class ReversaoVendaHelper
                 item.ProdutoId,
                 TipoMovimentacaoEstoque.Entrada,
                 item.Quantidade,
-                "Estorno de venda excluída"));
+                "Estorno de venda excluída",
+                origem: OrigemMovimentacaoEstoque.EstornoVenda));
 
             // Reverte o efeito de vasilhame que a venda causou no item. Desde a migração
             // AdicionarVendaIdEmprestimosVasilhames, o empréstimo criado por venda carrega o

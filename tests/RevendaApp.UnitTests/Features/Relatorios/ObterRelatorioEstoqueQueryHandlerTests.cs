@@ -165,6 +165,119 @@ public class ObterRelatorioEstoqueQueryHandlerTests
         Assert.Equal(30, resultado.PorDia.Count);
     }
 
+    /// <summary>
+    /// O estorno de venda editada/excluída é uma Entrada, mas NÃO é compra: somá-lo infla o total
+    /// comprado da distribuidora. Este é o caso que motivou a coluna Origem — filtrar por
+    /// <c>Tipo == Entrada</c> daria 60 aqui, quando a resposta certa é 50.
+    /// </summary>
+    [Fact]
+    public async Task Estoque_exclui_estorno_de_venda_das_entradas()
+    {
+        var (db, produto) = await CenarioAsync();
+        db.MovimentacoesEstoque.AddRange(
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Entrada, 50,
+                data: new DateTime(2026, 11, 5, 12, 0, 0, DateTimeKind.Utc),
+                origem: OrigemMovimentacaoEstoque.Compra),
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Entrada, 10,
+                data: new DateTime(2026, 11, 6, 12, 0, 0, DateTimeKind.Utc),
+                origem: OrigemMovimentacaoEstoque.EstornoVenda));
+        await db.SaveChangesAsync();
+        var handler = new ObterRelatorioEstoqueQueryHandler(db, TenantTeste.Contexto());
+
+        var resultado = await handler.Handle(
+            new ObterRelatorioEstoqueQuery(new PeriodoMes(2026, 11)), CancellationToken.None);
+
+        var linha = resultado.Produtos.Single();
+        Assert.Equal(50, linha.TotalEntradas);
+        Assert.Equal(0, linha.EntradasPorDia[5]);   // dia 6 não conta o estorno
+        Assert.Equal(50, linha.EntradasPorDia[4]);  // dia 5 conta a compra
+    }
+
+    /// <summary>
+    /// Filtro "Entradas": a saída de venda some da matriz e do total, mas o ajuste continua listado
+    /// (ajuste não é movimento — é um novo total).
+    /// </summary>
+    [Fact]
+    public async Task Estoque_filtro_entradas_nao_conta_saidas()
+    {
+        var (db, produto) = await CenarioAsync();
+        db.MovimentacoesEstoque.AddRange(
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Entrada, 20,
+                data: new DateTime(2026, 11, 5, 12, 0, 0, DateTimeKind.Utc),
+                origem: OrigemMovimentacaoEstoque.Compra),
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Saida, 7,
+                data: new DateTime(2026, 11, 6, 12, 0, 0, DateTimeKind.Utc),
+                origem: OrigemMovimentacaoEstoque.Venda),
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Ajuste, 33, "Inventário",
+                new DateTime(2026, 11, 7, 12, 0, 0, DateTimeKind.Utc)));
+        await db.SaveChangesAsync();
+        var handler = new ObterRelatorioEstoqueQueryHandler(db, TenantTeste.Contexto());
+
+        var resultado = await handler.Handle(
+            new ObterRelatorioEstoqueQuery(new PeriodoMes(2026, 11), FiltroMovimentoEstoque.Entradas),
+            CancellationToken.None);
+
+        var linha = resultado.Produtos.Single();
+        Assert.Equal(20, linha.TotalEntradas);
+        Assert.Equal(0, linha.TotalSaidas);
+        Assert.All(linha.SaidasPorDia, v => Assert.Equal(0, v));
+        Assert.Single(resultado.Ajustes);
+        Assert.Equal(0, resultado.PorDia.Sum(d => d.Saidas));
+    }
+
+    /// <summary>Filtro "Saídas": a compra some, a saída de venda fica.</summary>
+    [Fact]
+    public async Task Estoque_filtro_saidas_nao_conta_entradas()
+    {
+        var (db, produto) = await CenarioAsync();
+        db.MovimentacoesEstoque.AddRange(
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Entrada, 20,
+                data: new DateTime(2026, 11, 5, 12, 0, 0, DateTimeKind.Utc),
+                origem: OrigemMovimentacaoEstoque.Compra),
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Saida, 7,
+                data: new DateTime(2026, 11, 6, 12, 0, 0, DateTimeKind.Utc),
+                origem: OrigemMovimentacaoEstoque.Venda));
+        await db.SaveChangesAsync();
+        var handler = new ObterRelatorioEstoqueQueryHandler(db, TenantTeste.Contexto());
+
+        var resultado = await handler.Handle(
+            new ObterRelatorioEstoqueQuery(new PeriodoMes(2026, 11), FiltroMovimentoEstoque.Saidas),
+            CancellationToken.None);
+
+        var linha = resultado.Produtos.Single();
+        Assert.Equal(0, linha.TotalEntradas);
+        Assert.All(linha.EntradasPorDia, v => Assert.Equal(0, v));
+        Assert.Equal(7, linha.TotalSaidas);
+        Assert.Equal(0, resultado.PorDia.Sum(d => d.Entradas));
+    }
+
+    /// <summary>
+    /// O default da query é "Ambos": nenhum chamador existente (nem a tela antes do filtro) muda de
+    /// comportamento ao adicionar o parâmetro.
+    /// </summary>
+    [Fact]
+    public async Task Estoque_filtro_padrao_e_ambos()
+    {
+        var (db, produto) = await CenarioAsync();
+        db.MovimentacoesEstoque.AddRange(
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Entrada, 20,
+                data: new DateTime(2026, 11, 5, 12, 0, 0, DateTimeKind.Utc),
+                origem: OrigemMovimentacaoEstoque.Compra),
+            new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Saida, 7,
+                data: new DateTime(2026, 11, 6, 12, 0, 0, DateTimeKind.Utc),
+                origem: OrigemMovimentacaoEstoque.Venda));
+        await db.SaveChangesAsync();
+        var handler = new ObterRelatorioEstoqueQueryHandler(db, TenantTeste.Contexto());
+
+        var resultado = await handler.Handle(
+            new ObterRelatorioEstoqueQuery(new PeriodoMes(2026, 11)), CancellationToken.None);
+
+        var linha = resultado.Produtos.Single();
+        Assert.Equal(20, linha.TotalEntradas);
+        Assert.Equal(7, linha.TotalSaidas);
+        Assert.Equal(13, linha.MovimentoLiquido);
+    }
+
     [Fact]
     public async Task Estoque_sem_empresa_selecionada_lanca()
     {

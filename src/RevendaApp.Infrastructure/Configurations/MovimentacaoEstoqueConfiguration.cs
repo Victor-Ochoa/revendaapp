@@ -20,6 +20,7 @@ public class MovimentacaoEstoqueConfiguration : IEntityTypeConfiguration<Movimen
         builder.HasIndex(m => new { m.EmpresaId, m.Data });
 
         builder.Property(m => m.Tipo).HasConversion<string>().HasMaxLength(20);
+        builder.Property(m => m.Origem).HasConversion<string>().HasMaxLength(20);
         builder.Property(m => m.Motivo).HasMaxLength(300);
 
         builder.HasOne(m => m.Produto)

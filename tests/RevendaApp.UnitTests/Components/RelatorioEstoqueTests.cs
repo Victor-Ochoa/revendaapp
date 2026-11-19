@@ -75,12 +75,70 @@ public class RelatorioEstoqueTests
         Assert.NotEmpty(matriz.QuerySelectorAll("td"));
     }
 
-    private static BunitContext CriarContexto(RelatorioEstoqueResult resultado)
+    /// <summary>
+    /// A tela abre no modo "Ambos" — o mesmo comportamento de antes do filtro existir. Se o default
+    /// mudasse, quem já usa o relatório veria menos dados sem ter pedido.
+    /// </summary>
+    [Fact]
+    public async Task Filtro_abre_em_ambos_por_padrao()
+    {
+        await using var ctx = CriarContexto(NovembroComDoisDias(), out var sender);
+
+        var cut = ctx.Render<RelatorioEstoque>();
+        cut.WaitForAssertion(() => Assert.Contains("Botijão P13", cut.Markup, StringComparison.Ordinal));
+
+        Assert.Equal([FiltroMovimentoEstoque.Ambos], sender.FiltrosPedidos);
+        Assert.Contains("Entradas no mês", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("Saídas no mês", cut.Markup, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Trocar para "Somente entradas" recarrega a consulta com o filtro certo e esconde o que não
+    /// é entrada — inclusive a série de saídas do gráfico, para não deixar uma linha zerada.
+    /// </summary>
+    [Fact]
+    public async Task Filtro_somente_entradas_recarrega_e_esconde_saidas()
+    {
+        await using var ctx = CriarContexto(NovembroComDoisDias(), out var sender);
+
+        var cut = ctx.Render<RelatorioEstoque>();
+        cut.WaitForAssertion(() => Assert.Contains("Botijão P13", cut.Markup, StringComparison.Ordinal));
+
+        cut.FindAll(".mud-toggle-item")[1].Click();
+
+        cut.WaitForAssertion(() => Assert.Contains(FiltroMovimentoEstoque.Entradas, sender.FiltrosPedidos));
+        cut.WaitForAssertion(() => Assert.DoesNotContain("Saídas no mês", cut.Markup, StringComparison.Ordinal));
+        Assert.Contains("Entradas no mês", cut.Markup, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// "Somente saídas" é o espelho: a coluna de entradas some e a de saídas fica.
+    /// </summary>
+    [Fact]
+    public async Task Filtro_somente_saidas_esconde_entradas()
+    {
+        await using var ctx = CriarContexto(NovembroComDoisDias(), out var sender);
+
+        var cut = ctx.Render<RelatorioEstoque>();
+        cut.WaitForAssertion(() => Assert.Contains("Botijão P13", cut.Markup, StringComparison.Ordinal));
+
+        cut.FindAll(".mud-toggle-item")[2].Click();
+
+        cut.WaitForAssertion(() => Assert.Contains(FiltroMovimentoEstoque.Saidas, sender.FiltrosPedidos));
+        cut.WaitForAssertion(() => Assert.DoesNotContain("Entradas no mês", cut.Markup, StringComparison.Ordinal));
+        Assert.Contains("Saídas no mês", cut.Markup, StringComparison.Ordinal);
+    }
+
+    private static BunitContext CriarContexto(RelatorioEstoqueResult resultado) =>
+        CriarContexto(resultado, out _);
+
+    private static BunitContext CriarContexto(RelatorioEstoqueResult resultado, out SenderDeRelatorioEstoque sender)
     {
         var ctx = new BunitContext();
         ctx.JSInterop.Mode = JSRuntimeMode.Loose;
         ctx.Services.AddMudServices();
-        ctx.Services.AddSingleton<ISender>(new SenderDeRelatorioEstoque(resultado));
+        sender = new SenderDeRelatorioEstoque(resultado);
+        ctx.Services.AddSingleton<ISender>(sender);
         return ctx;
     }
 
@@ -119,6 +177,9 @@ public class RelatorioEstoqueTests
 
     private sealed class SenderDeRelatorioEstoque(RelatorioEstoqueResult resultado) : ISender
     {
+        /// <summary>Filtros que a tela pediu, na ordem — permite provar que o toggle recarrega.</summary>
+        public List<FiltroMovimentoEstoque> FiltrosPedidos { get; } = [];
+
         public ValueTask<TResponse> Send<TResponse>(IRequest<TResponse> request, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException("A tela usa a sobrecarga IQuery.");
 
@@ -127,8 +188,9 @@ public class RelatorioEstoqueTests
 
         public ValueTask<TResponse> Send<TResponse>(IQuery<TResponse> query, CancellationToken cancellationToken = default)
         {
-            if (query is ObterRelatorioEstoqueQuery)
+            if (query is ObterRelatorioEstoqueQuery consulta)
             {
+                FiltrosPedidos.Add(consulta.Filtro);
                 return ValueTask.FromResult((TResponse)(object)resultado);
             }
 
