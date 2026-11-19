@@ -23,6 +23,8 @@ public sealed class ObterRelatorioEstoqueQueryHandler(AppDbContext db, ITenantCo
         _ = tenant.EmpresaIdRequerida("obter relatório de estoque");
 
         var periodo = query.Periodo;
+        var incluiEntradas = query.Filtro != FiltroMovimentoEstoque.Saidas;
+        var incluiSaidas = query.Filtro != FiltroMovimentoEstoque.Entradas;
 
         // Todos os produtos, inclusive inativos: o relatório é de auditoria, não de venda.
         var produtos = await db.Produtos
@@ -60,10 +62,20 @@ public sealed class ObterRelatorioEstoqueQueryHandler(AppDbContext db, ITenantCo
                     switch (movimento.Tipo)
                     {
                         case TipoMovimentacaoEstoque.Entrada:
-                            entradas[indice] += movimento.Quantidade;
+                            // Estorno de venda editada/excluída também é Entrada, mas não é compra:
+                            // somá-lo inflaria o total comprado. Fica de fora em todos os filtros.
+                            if (movimento.Origem != OrigemMovimentacaoEstoque.EstornoVenda && incluiEntradas)
+                            {
+                                entradas[indice] += movimento.Quantidade;
+                            }
+
                             break;
                         case TipoMovimentacaoEstoque.Saida:
-                            saidas[indice] += movimento.Quantidade;
+                            if (incluiSaidas)
+                            {
+                                saidas[indice] += movimento.Quantidade;
+                            }
+
                             break;
                         case TipoMovimentacaoEstoque.Ajuste:
                             // Ajuste não é movimento: o número registrado é o novo total, não um

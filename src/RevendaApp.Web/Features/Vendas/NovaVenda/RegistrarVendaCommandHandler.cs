@@ -181,7 +181,8 @@ public sealed class RegistrarVendaCommandHandler(AppDbContext db, ITenantContext
                 }
             }
 
-            db.MovimentacoesEstoque.Add(new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Saida, itemInput.Quantidade, "Venda"));
+            db.MovimentacoesEstoque.Add(new MovimentacaoEstoque(produto.Id, TipoMovimentacaoEstoque.Saida, itemInput.Quantidade, "Venda",
+                origem: OrigemMovimentacaoEstoque.Venda));
         }
 
         if (command.Desconto > 0)

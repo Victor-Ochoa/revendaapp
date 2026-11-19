@@ -75,7 +75,13 @@ public sealed class RegistrarMovimentacaoEstoqueCommandHandler(AppDbContext db, 
                 break;
         }
 
-        var movimentacao = new MovimentacaoEstoque(command.ProdutoId, command.Tipo, command.Quantidade, command.Motivo);
+        // Entrada manual no estoque é, na prática, a compra na distribuidora. Saída manual e ajuste não
+        // têm origem comercial: ficam como Manual para não se confundirem com venda.
+        var origem = command.Tipo == TipoMovimentacaoEstoque.Entrada
+                    ? OrigemMovimentacaoEstoque.Compra
+                    : OrigemMovimentacaoEstoque.Manual;
+
+        var movimentacao = new MovimentacaoEstoque(command.ProdutoId, command.Tipo, command.Quantidade, command.Motivo, origem: origem);
         db.MovimentacoesEstoque.Add(movimentacao);
 
         var (usuario, _) = await UsuarioAtual.ObterAsync(authStateProvider, db, cancellationToken);
